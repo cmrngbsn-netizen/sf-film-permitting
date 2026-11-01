@@ -23,10 +23,6 @@ KEEP = "Keep as drawn"
 
 st.set_page_config(page_title="SF Film Permit Area", layout="wide")
 st.title("SF Film Permit Area")
-st.info(
-    "Beta planning aid, not an official filing. Requests still go through Film SF and SFMTA.",
-    icon="ℹ️",
-)
 
 
 @st.cache_resource
