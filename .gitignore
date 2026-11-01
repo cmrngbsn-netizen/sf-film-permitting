@@ -4,3 +4,4 @@ scripts/.cache/
 .DS_Store
 .claude/
 Project Requirements/
+.pytest_cache/
