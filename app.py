@@ -5,11 +5,14 @@ against the nearest cross streets, and add notes.
 Run locally with: streamlit run app.py
 """
 
+from datetime import date
+
 import folium
 import streamlit as st
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 
+from core.pdf import build_pdf, render_map
 from core.streets import StreetIndex
 
 SF_CENTER = [37.7749, -122.4194]
@@ -29,6 +32,11 @@ st.info(
 @st.cache_resource
 def street_index():
     return StreetIndex()
+
+
+@st.cache_data(show_spinner="Drawing the map for the PDF...")
+def pdf_map(final):
+    return render_map(list(final))
 
 
 def base_map(**kwargs):
@@ -143,3 +151,9 @@ if points:
     with list_col:
         st.markdown("**Area boundary, in order**")
         st.markdown("\n".join(f"{i}. {text}" for i, text in enumerate(listing, start=1)))
+
+        st.download_button(
+            "Download PDF", type="primary", mime="application/pdf",
+            file_name=f"sf-permit-area-{date.today():%Y-%m-%d}.pdf",
+            data=build_pdf(pdf_map(tuple(final)), listing, st.session_state.get("notes", "")),
+        )
