@@ -20,7 +20,8 @@ LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
 DEFAULT_COLOR = LINE_COLORS["Red"]
 STAR, TEXT = "Star", "Text box"
 MARKER_KINDS = [STAR, TEXT]
-TEXT_COLOR = "#2b2b2b"  # default text box border, a soft black
+TEXT_COLOR = LINE_COLORS["Black"]  # default text box border
+ARROW_COLOR = "#000000"  # arrows are always black
 TEXT_PX = {"min": 10, "max": 36, "default": 14}  # text box font size on screen, in pixels
 # Version 3 named the sizes.
 NAMED_SIZES = {"Small": 11, "Medium": 14, "Large": 18, "X-Large": 24}
@@ -56,7 +57,7 @@ class Line:
 @dataclass
 class Arrow:
     points: list  # [(lat, lon), ...]; the head is at the last point
-    color: str = DEFAULT_COLOR
+    color: str = ARROW_COLOR
 
 
 @dataclass
@@ -140,7 +141,7 @@ class Request:
             # Version 2 had one Scene text field.
             scenes=raw.get("scenes") or ([raw["info"]["Scene"]] if raw.get("info", {}).get("Scene") else []),
             lines=[_line_in(line) for line in raw.get("lines", [])],
-            arrows=[Arrow([(lat, lon) for lat, lon in a["points"]], a.get("color", DEFAULT_COLOR))
+            arrows=[Arrow([(lat, lon) for lat, lon in a["points"]])  # older files had colored arrows
                     for a in raw.get("arrows", [])],
             markers=[Marker(tuple(m["point"]), m.get("kind", STAR), m.get("text", ""),
                             text_size(m.get("size")), m.get("color", TEXT_COLOR))

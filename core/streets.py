@@ -49,6 +49,21 @@ def pretty_street(name):
     return " ".join(words)
 
 
+# Street type words a search can leave off ("Grant" for "GRANT AVE").
+STREET_TYPES = {"ST", "STREET", "AVE", "AVENUE", "BLVD", "BOULEVARD", "DR", "DRIVE", "WAY", "PL",
+                "PLACE", "CT", "COURT", "LN", "LANE", "TER", "TERRACE", "RD", "ROAD", "ALY", "ALLEY",
+                "CIR", "HWY", "PLZ", "ROW", "WALK"}
+
+
+def street_key(name):
+    """A street name as searched for: "03RD ST" -> "3RD", "O'Farrell St." -> "OFARRELL".
+    The map's address search (core.map_tools) normalizes what's typed the same way."""
+    words = re.sub(r"\b0+(\d)", r"\1", re.sub(r"[.']", "", name.upper())).split()
+    while len(words) > 1 and words[-1] in STREET_TYPES:
+        words.pop()
+    return " ".join(words)
+
+
 def join_streets(names):
     return " & ".join(pretty_street(n) for n in names) if names else "unnamed streets"
 
@@ -132,6 +147,15 @@ class StreetIndex:
         direction of the piece it lies on)."""
         seg, d, cx, cy, direction, _ = self.nearest_piece(*to_xy(lat, lon))
         return self.segments[seg], d, cx, cy, direction
+
+    def intersection_index(self):
+        """Every intersection, for searching "Grant & Washington" on the map:
+        {"streets": [[name, search key], ...], "nodes": [[[street, ...], lat, lon], ...]}."""
+        names = sorted({n for c in self.int_cnns for n in self.node_names[c]})
+        number = {n: i for i, n in enumerate(names)}
+        nodes = [[[number[n] for n in self.node_names[c]], *(round(v, 5) for v in to_latlon(x, y))]
+                 for c, (x, y) in zip(self.int_cnns, self.int_xy)]
+        return {"streets": [[pretty_street(n), street_key(n)] for n in names], "nodes": nodes}
 
     def cross_streets(self, node_cnn, own_street):
         """Names at a block's end node other than the block's own street."""

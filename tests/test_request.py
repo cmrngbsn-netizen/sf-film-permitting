@@ -18,7 +18,7 @@ def sample():
     first.notes = "Crew parking on Grove"
     first.lines = [Line([(37.7806, -122.4180), (37.7807, -122.4170)], "#1f77b4")]
     first.markers = [Marker((37.7795, -122.4189), STAR), Marker((37.7801, -122.4175), TEXT, "INT City Hall", 22, "#2ca02c")]
-    first.arrows = [Arrow([(37.7801, -122.4175), (37.7806, -122.4178)], "#2ca02c")]
+    first.arrows = [Arrow([(37.7801, -122.4175), (37.7806, -122.4178)])]
     first.auto_name = False
     first.zones = {"123:1:4": {"Curb": "6 meters (6 general)", "Meters": "Metered", "Spaces": 8,
                                "Use": "Working vehicles"}}
@@ -87,7 +87,7 @@ def test_opens_version_2_scene_field():
           '"markers": [{"point": [37.78, -122.42], "kind": "Text box", "text": "PICTURE"}]}]}')
     loc = Request.from_json(v2).locations[0]
     assert loc.scenes == ["INT City Hall - SHOOT"]
-    assert loc.markers[0].size == 14 and loc.markers[0].color == "#2b2b2b"
+    assert loc.markers[0].size == 14 and loc.markers[0].color == "#222222"
     assert loc.arrows == []
 
 

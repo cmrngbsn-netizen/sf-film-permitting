@@ -1,0 +1,3 @@
+[server]
+# Serves static/ (the map search's intersection list) at app/static/.
+enableStaticServing = true

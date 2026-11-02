@@ -8,7 +8,6 @@ Run locally with: streamlit run app.py
 """
 
 import io
-import math
 import re
 import sys
 from dataclasses import replace
@@ -18,7 +17,7 @@ from pathlib import Path
 import folium
 import pypdfium2
 import streamlit as st
-from folium.plugins import Draw, Geocoder
+from folium.plugins import Draw
 from streamlit_folium import st_folium
 
 
@@ -40,11 +39,11 @@ from core.basemaps import DEFAULT as BASEMAP  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
 from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
 from core.drawings import merge  # noqa: E402
-from core.map_tools import MapTools  # noqa: E402
-from core.pdf import Box, Page, build_pdf, render_map, tile_x, tile_y  # noqa: E402
-from core.request import (LINE_COLORS, LOCATION_FIELDS, MARKER_KINDS, REQUEST_FIELDS,  # noqa: E402
-                          STAR, TEXT_COLOR, TEXT_PX, Arrow, Line, Marker, Request, format_phone,
-                          text_size)
+from core.map_tools import ArrowHeads, MapTools  # noqa: E402
+from core.pdf import Box, Page, build_pdf, render_map  # noqa: E402
+from core.request import (DEFAULT_COLOR, LINE_COLORS, LOCATION_FIELDS, REQUEST_FIELDS,  # noqa: E402
+                          STAR, TEXT, TEXT_COLOR, TEXT_PX, Arrow, Line, Marker, Request,
+                          format_phone, text_size)
 from core.streets import StreetIndex  # noqa: E402
 from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest, by_color,  # noqa: E402
                           summarize)
@@ -120,18 +119,6 @@ def text_icon(text, size, color):
                                f'{escape_html(text) or "Text box"}</div>')
 
 
-def add_arrow(m, points, color):
-    """A line with a triangle head at its last point."""
-    folium.PolyLine(points, color=color, weight=4).add_to(m)
-    (ay, ax), (by, bx) = points[-2], points[-1]
-    # Heading on screen (Web Mercator), so the head lines up with the drawn line.
-    angle = math.degrees(math.atan2(tile_y(by, 0) - tile_y(ay, 0), tile_x(bx, 0) - tile_x(ax, 0)))
-    folium.Marker(points[-1], icon=folium.DivIcon(icon_size=(0, 0), icon_anchor=(0, 0), html=(
-        '<div style="position:absolute;left:-18px;top:-8px;width:18px;height:16px;'
-        f'transform-origin:18px 8px;transform:rotate({angle}deg)"><svg width="18" height="16">'
-        f'<path d="M0 0 L18 8 L0 16 Z" fill="{color}"/></svg></div>'))).add_to(m)
-
-
 def escape_html(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -149,7 +136,7 @@ def add_basemap(m, basemap):
 
 def base_map(**kwargs):
     """A map of SF on the basemap."""
-    m = folium.Map(tiles=None, min_zoom=12, max_zoom=20, max_bounds=True,
+    m = folium.Map(tiles=None, min_zoom=12, scroll_wheel_zoom=False, max_zoom=20, max_bounds=True,
                    min_lat=SF_BOUNDS[0][0], min_lon=SF_BOUNDS[0][1],
                    max_lat=SF_BOUNDS[1][0], max_lon=SF_BOUNDS[1][1], **kwargs)
     add_basemap(m, BASEMAP)
@@ -161,39 +148,32 @@ def fit(m, points):
                   [max(p[0] for p in points), max(p[1] for p in points)]], padding=(30, 30))
 
 
-def drawing_map(lines, arrows, markers, line_kind, color, marker_kind):
+def drawing_map(lines, arrows, markers):
     """The map to draw on, starting with a location's saved lines, arrows and markers, which
-    stay editable. The line tool draws `line_kind` ("curb" or "arrow") in `color`."""
-    m = base_map(location=SF_CENTER, zoom_start=14)
+    stay editable. Its tools are in a panel beside it (core.map_tools)."""
+    m = base_map(location=SF_CENTER, zoom_start=14, zoom_control=False)
     saved = folium.FeatureGroup(name="Drawing").add_to(m)
     # Order matters: core.map_tools matches these to their saved details in this order.
     for line in lines:
         folium.PolyLine(line.points, color=line.color, weight=5).add_to(saved)
     for arrow in arrows:
-        folium.PolyLine(arrow.points, color=arrow.color, weight=4).add_to(saved)
+        folium.PolyLine(arrow.points, color=arrow.color, weight=4, line_cap="butt").add_to(saved)
     for marker in markers:
         folium.Marker(marker.point).add_to(saved)  # its look comes from core.map_tools
     every = ([p for line in lines for p in line.points] + [p for a in arrows for p in a.points]
              + [mk.point for mk in markers])
     if every:
         fit(m, every)
-    # The line tool for curbs and arrows, the marker tool for stars and text boxes.
+    # Leaflet's drawing plugin, for its line and marker tools. Its own toolbar is hidden;
+    # core.map_tools starts the tools from the panel beside the map.
     Draw(
         feature_group=saved,
         show_geometry_on_click=False,
-        draw_options={
-            "polyline": {"shapeOptions": {"color": color, "weight": 5 if line_kind == "curb" else 4}},
-            "marker": True,
-            "polygon": False, "rectangle": False, "circle": False, "circlemarker": False,
-        },
-        edit_options={"edit": True, "remove": True},
+        draw_options={"polyline": True, "marker": True, "polygon": False, "rectangle": False,
+                      "circle": False, "circlemarker": False},
+        edit_options={"edit": False, "remove": False},
     ).add_to(m)
-    m.add_child(MapTools(saved, lines, arrows, markers, line_kind, color, marker_kind,
-                         list(LINE_COLORS.values()), TEXT_COLOR, TEXT_PX))
-    # Address search, limited to San Francisco (OpenStreetMap's Nominatim).
-    Geocoder(position="topright", add_marker=False, zoom=18, provider_options={
-        "geocodingQueryParams": {"viewbox": "-122.53,37.84,-122.35,37.70", "bounded": 1,
-                                 "countrycodes": "us"}}).add_to(m)
+    m.add_child(MapTools(saved, lines, arrows, markers, LINE_COLORS, TEXT_COLOR, TEXT_PX))
     return m
 
 
@@ -207,12 +187,13 @@ def zones_map(lines, arrows, markers):
             html=f'<div style="background:white;color:black;border:2px solid {color};'
                  f'width:30px;text-align:center;font:bold 12px sans-serif">{label}</div>',
         )).add_to(m)
-    for pts, color in arrows:
-        add_arrow(m, list(pts), color)
+    shafts = [folium.PolyLine(list(pts), color=color, weight=4, line_cap="butt").add_to(m)
+              for pts, color in arrows]
     for kind, point, text, size, color in markers:
         add_marker(m, Marker(point, kind, text, size, color))
     fit(m, [p for pts, _, _ in lines for p in pts] + [p for pts, _ in arrows for p in pts]
         + [mk[1] for mk in markers])
+    m.add_child(ArrowHeads(shafts))  # after fit, once the lines are on screen
     return m
 
 
@@ -384,40 +365,22 @@ with buttons[-1]:
 
 loc = next(loc for loc in req.locations if loc.id == st.session_state.current)
 
-map_col, side_col = st.columns([3, 2])
-
-with map_col:
-    tool_col, color_col, kind_col = st.columns([2, 4, 2])
-    with tool_col:
-        line_kind = st.radio("Line tool draws", ["curb", "arrow"], horizontal=True, key="line_kind",
-                             format_func=lambda k: "━ Curb" if k == "curb" else "➜ Arrow")
-    with color_col:
-        color_name = st.radio("Color", list(LINE_COLORS), horizontal=True, key="line_color",
-                              format_func=lambda n: f":{SCREEN_COLORS[n]}[●] {n}")
-    with kind_col:
-        marker_kind = st.radio("Marker tool adds", MARKER_KINDS, horizontal=True, key="marker_kind",
-                               format_func=lambda k: "★ Star" if k == STAR else "▭ Text box")
-    color = LINE_COLORS[color_name]
+map_col, side_col = st.columns([3, 1])
 
 # The map starts from the open location's saved lines and markers. It is only rebuilt when
-# a different location is opened or a tool setting changes (rebuilding resets the view);
-# otherwise what the user draws comes back through all_drawings.
-setup = (gen, loc.id, line_kind, color, marker_kind)
+# a different location is opened (rebuilding resets the view); tools switch inside the map,
+# and what the user draws comes back through all_drawings.
+setup = (gen, loc.id)
 if st.session_state.get("map_setup") != setup:
     st.session_state.map_setup = setup
     st.session_state.map_opens = st.session_state.get("map_opens", 0) + 1
     st.session_state.map_shapes = (list(loc.lines), list(loc.arrows), list(loc.markers))
 
 with map_col:
-    st.caption("**Curbs:** pick **Curb** and a color, click the line tool (left side of the map), "
-               "click along the curb, then click the last point again (or **Finish**). A line can "
-               "turn corners. **Arrows:** pick **Arrow**, then draw from a text box or star to what "
-               "it points at; the head goes at the last point. **Stars and text boxes:** pick one, "
-               "click the marker tool, then click the map. Click a text box to write in it, size it "
-               "or color its border. Use the pencil to move things and the trash can to delete them. "
-               "Search for an address with the magnifier (top right).")
-    result = st_folium(drawing_map(*st.session_state.map_shapes, line_kind, color, marker_kind),
-                       height=600,
+    st.caption("Pick a tool in the panel beside the map and it's ready to use. **Lock** keeps the "
+               "map still while you place things. Scrolling the page passes over the map; pinch "
+               "(or Ctrl + scroll) to zoom. To delete something, pick **Erase** and click it.")
+    result = st_folium(drawing_map(*st.session_state.map_shapes), height=600,
                        use_container_width=True, returned_objects=["all_drawings"],
                        key=f"draw-{st.session_state.map_opens}")
 
@@ -430,9 +393,9 @@ if drawings is not None:  # None until the user draws, edits or deletes on this 
     points = [d for d in drawings if (d.get("geometry") or {}).get("type") == "Point"]
     if all("kind" in (d.get("properties") or {}) for d in lines + points):
         # The map script keeps each shape's details on the shape itself (core.map_tools).
-        loc.lines = [Line(latlon(d["geometry"]["coordinates"]), d["properties"].get("color", color))
+        loc.lines = [Line(latlon(d["geometry"]["coordinates"]), d["properties"].get("color", DEFAULT_COLOR))
                      for d in lines if d["properties"]["kind"] != "arrow"]
-        loc.arrows = [Arrow(latlon(d["geometry"]["coordinates"]), d["properties"].get("color", color))
+        loc.arrows = [Arrow(latlon(d["geometry"]["coordinates"]))
                       for d in lines if d["properties"]["kind"] == "arrow"]
         loc.markers = [Marker(latlon([d["geometry"]["coordinates"]])[0], d["properties"]["kind"],
                               d["properties"].get("text", ""), text_size(d["properties"].get("size")),
@@ -442,10 +405,10 @@ if drawings is not None:  # None until the user draws, edits or deletes on this 
         # we knew about them by matching positions.
         loc.lines = merge(loc.lines, [latlon(d["geometry"]["coordinates"]) for d in lines],
                           lambda line: line.points, lambda line, pts: replace(line, points=pts),
-                          lambda pts: Line(pts, color))
+                          lambda pts: Line(pts))
         loc.markers = merge(loc.markers, [latlon([d["geometry"]["coordinates"]])[0] for d in points],
                             lambda mk: mk.point, lambda mk, pt: replace(mk, point=pt),
-                            lambda pt: Marker(pt, marker_kind))
+                            lambda pt: Marker(pt, TEXT))
 zones, ids, colors, base_rows = location_zones(loc)
 
 # Until the user types their own, the Location name follows the lines ("Grant @ Washington").

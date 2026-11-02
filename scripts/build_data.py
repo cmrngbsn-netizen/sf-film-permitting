@@ -7,6 +7,8 @@ Outputs:
   data/nodes.json        intersection node CNN -> street names meeting there
   data/curbs.json        active meters and color curbs (driveways, loading zones, ...)
                          placed on their block, side and position along the block
+  static/intersections.json  every intersection's streets and position, fetched by the
+                         map's address search (served by Streamlit's static file serving)
 """
 
 import json
@@ -206,6 +208,17 @@ def main():
     print(f"Nodes without names: {len(used) - len(nodes)}")
     print()
     build_curbs()
+    build_intersections()
+
+
+def build_intersections():
+    sys.path.insert(0, str(ROOT))
+    from core.streets import StreetIndex
+
+    out = ROOT / "static" / "intersections.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps(StreetIndex().intersection_index(), separators=(",", ":")))
+    print(f"Intersections for the map search -> {out.stat().st_size // 1024} KB")
 
 
 if __name__ == "__main__":
