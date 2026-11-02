@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.curbs import CurbZoner, place_name, short_street
+from core.curbs import CurbZoner, place_name, place_names, short_street
 from core.streets import StreetIndex, to_latlon, to_xy
 
 
@@ -81,3 +81,17 @@ def test_short_street():
     assert short_street("Walter U Lum Pl") == "Walter U Lum"
     assert short_street("Broadway") == "Broadway"
     assert short_street("The Embarcadero") == "The Embarcadero"
+
+
+def test_place_names_for_several_lines(zoner):
+    clay, wash = corner(zoner, "GRANT AVE", "CLAY ST"), corner(zoner, "GRANT AVE", "WASHINGTON ST")
+    near_wash = zoner.zones(curb_line(clay, wash, 6, frac=(0.45, 0.97)))
+    near_clay = zoner.zones(curb_line(clay, wash, -6, frac=(0.03, 0.55)))
+    assert place_names([near_wash, near_clay]) == [
+        "Grant @ Washington", "Grant @ Clay", "Grant @ Washington & Clay"]
+    waverly = corner(zoner, "WASHINGTON ST", "WAVERLY PL")
+    on_wash = zoner.zones(curb_line(wash, waverly, 6, frac=(0.1, 0.9)))
+    names = place_names([near_wash, on_wash])
+    assert names[0] == "Grant @ Washington" and names[-1] == " / ".join(names[:-1])
+    assert place_names([near_wash, near_wash]) == ["Grant @ Washington"]
+    assert place_names([[]]) == []

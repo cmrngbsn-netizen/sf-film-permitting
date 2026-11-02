@@ -35,11 +35,12 @@ if getattr(sys, "_sf_core_version", None) != code_version():
 
 from core.basemaps import DEFAULT as BASEMAP  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
-from core.curbs import CurbZoner, place_name  # noqa: E402
+from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
 from core.drawings import merge  # noqa: E402
+from core.markers_js import SCREEN_PX, MarkerTools  # noqa: E402
 from core.pdf import Page, build_pdf, render_map  # noqa: E402
 from core.request import (LINE_COLORS, LOCATION_FIELDS, MARKER_KINDS, REQUEST_FIELDS,  # noqa: E402
-                          STAR, Line, Marker, Request, format_phone)
+                          STAR, TEXT_SIZES, Line, Marker, Request, format_phone)
 from core.streets import StreetIndex  # noqa: E402
 from core.summary import METERS, PICTURE, USES, WORKING, Window, ZoneRequest, summarize  # noqa: E402
 
@@ -90,13 +91,13 @@ def star_icon():
                                'text-shadow:0 0 2px #5a3200">★</div>')
 
 
-def text_icon(text):
+def text_icon(text, size="Medium"):
     """A white box with a dark border, centered on the marker's point."""
-    return folium.DivIcon(icon_size=(200, 40), icon_anchor=(100, 20),
-                          html='<div style="width:200px;text-align:center"><span style="'
-                               'display:inline-block;background:white;color:black;'
-                               'border:2px solid #282828;padding:2px 6px;font:bold 12px sans-serif;'
-                               f'white-space:pre">{escape_html(text) or "Text box"}</span></div>')
+    return folium.DivIcon(icon_size=(0, 0), icon_anchor=(0, 0),
+                          html='<div style="position:absolute;transform:translate(-50%,-50%);'
+                               'white-space:pre;background:white;color:black;border:2px solid #282828;'
+                               f'padding:2px 6px;font:bold {SCREEN_PX.get(size, 14)}px sans-serif">'
+                               f'{escape_html(text) or "Text box"}</div>')
 
 
 def escape_html(text):
@@ -104,7 +105,7 @@ def escape_html(text):
 
 
 def add_marker(group, marker):
-    icon = star_icon() if marker.kind == STAR else text_icon(marker.text)
+    icon = star_icon() if marker.kind == STAR else text_icon(marker.text, marker.size)
     folium.Marker(marker.point, icon=icon).add_to(group)
 
 
@@ -128,7 +129,7 @@ def fit(m, points):
                   [max(p[0] for p in points), max(p[1] for p in points)]], padding=(30, 30))
 
 
-def drawing_map(lines, markers, color):
+def drawing_map(lines, markers, color, marker_kind):
     """The map to draw on, starting with a location's saved lines and markers, which stay
     editable. New lines are drawn in `color`."""
     m = base_map(location=SF_CENTER, zoom_start=14)
@@ -151,6 +152,8 @@ def drawing_map(lines, markers, color):
         },
         edit_options={"edit": True, "remove": True},
     ).add_to(m)
+    # Numbered stars and text boxes you can click to write in (see core.markers_js).
+    m.add_child(MarkerTools(saved, markers, marker_kind, TEXT_SIZES))
     # Address search, limited to San Francisco (OpenStreetMap's Nominatim).
     Geocoder(position="topright", add_marker=False, zoom=18, provider_options={
         "geocodingQueryParams": {"viewbox": "-122.53,37.84,-122.35,37.70", "bounded": 1,
@@ -168,9 +171,9 @@ def zones_map(lines, markers):
             html=f'<div style="background:white;color:black;border:2px solid {color};'
                  f'width:30px;text-align:center;font:bold 12px sans-serif">{label}</div>',
         )).add_to(m)
-    for kind, point, text in markers:
-        add_marker(m, Marker(point, kind, text))
-    fit(m, [p for pts, _, _ in lines for p in pts] + [point for _, point, _ in markers])
+    for kind, point, text, size in markers:
+        add_marker(m, Marker(point, kind, text, size))
+    fit(m, [p for pts, _, _ in lines for p in pts] + [mk[1] for mk in markers])
     return m
 
 
@@ -242,7 +245,7 @@ def location_page(req, loc):
                         loc.windows.get(zid, []), r["Curb"] or "")
             for z, zid, r in zip(zones, ids, rows)]
     drawn = tuple((tuple(z.points), c, str(a.spaces)) for z, c, a in zip(zones, colors, asks))
-    markers = tuple((m.kind, tuple(m.point), m.text) for m in loc.markers
+    markers = tuple((m.kind, tuple(m.point), m.text, m.size) for m in loc.markers
                     if m.kind == STAR or m.text.strip())
     # The legend says what each line color was used for on this page.
     legend = {}
@@ -259,7 +262,7 @@ def location_page(req, loc):
         "Email": req.info["Email"],
         "Film SF permit #": req.info["Film SF permit #"],
         "Location": loc.info["Location"],
-        "Scene": loc.info["Scene"],
+        "Scene(s)": loc.scenes,
         **summarize(asks),
     }
     return drawn, markers, fields, legend
@@ -356,10 +359,11 @@ if st.session_state.get("map_setup") != setup:
 with map_col:
     st.caption("**Curbs:** pick a color, click the line tool (left side of the map), click along "
                "the curb, then click the last point again (or **Finish**). A line can turn corners. "
-               "**Stars and text boxes:** pick one above, click the marker tool, click the map; "
-               "type a text box's words in the table below. Use the pencil to move things and the "
-               "trash can to delete them. Search for an address with the magnifier (top right).")
-    result = st_folium(drawing_map(*st.session_state.map_shapes, color), height=600,
+               "**Stars and text boxes:** pick one above, click the marker tool, then click the map. "
+               "Click any star or text box to write in it, resize it or change it. Use the pencil "
+               "to move things and the trash can to delete them. Search for an address with the "
+               "magnifier (top right).")
+    result = st_folium(drawing_map(*st.session_state.map_shapes, color, marker_kind), height=600,
                        use_container_width=True, returned_objects=["all_drawings"],
                        key=f"draw-{st.session_state.map_opens}")
 
@@ -370,14 +374,22 @@ if drawings is not None:  # None until the user draws, edits or deletes on this 
                                   for g in geoms if g.get("type") == "LineString"],
                       lambda line: line.points, lambda line, pts: replace(line, points=pts),
                       lambda pts: Line(pts, color))
-    loc.markers = merge(loc.markers, [(g["coordinates"][1], g["coordinates"][0])
-                                      for g in geoms if g.get("type") == "Point"],
-                        lambda mk: mk.point, lambda mk, pt: replace(mk, point=pt),
-                        lambda pt: Marker(pt, marker_kind))
+    points = [d for d in drawings if (d.get("geometry") or {}).get("type") == "Point"]
+    if all("kind" in (d.get("properties") or {}) for d in points):
+        # The map script keeps each marker's kind, words and size on the marker itself.
+        loc.markers = [Marker((d["geometry"]["coordinates"][1], d["geometry"]["coordinates"][0]),
+                              d["properties"]["kind"], d["properties"].get("text", ""),
+                              d["properties"].get("size", "Medium")) for d in points]
+    else:
+        loc.markers = merge(loc.markers, [(d["geometry"]["coordinates"][1], d["geometry"]["coordinates"][0])
+                                          for d in points],
+                            lambda mk: mk.point, lambda mk, pt: replace(mk, point=pt),
+                            lambda pt: Marker(pt, marker_kind))
 zones, ids, colors, base_rows = location_zones(loc)
 
 # Until the user types their own, the Location name follows the lines ("Grant @ Washington").
 suggested = place_name(zones)
+suggestions = place_names([zoner().zones(line.points) for line in loc.lines])
 name_key = f"g{gen}-{loc.id}-Location"
 if loc.auto_name and suggested and st.session_state.get(name_key, loc.info["Location"]) in (
         "", loc.info["Location"]) and loc.info["Location"] != suggested:
@@ -387,14 +399,26 @@ if loc.auto_name and suggested and st.session_state.get(name_key, loc.info["Loca
 with side_col:
     for name in LOCATION_FIELDS:
         placeholder = {"Location": "Filled in from the first line you draw",
-                       "Scene": "e.g. INT City Hall - SHOOT",
                        "Phone": "(415) 555-0100"}.get(name)
         bound_text(name, loc.info, name, f"g{gen}-{loc.id}-{name}", placeholder=placeholder,
                    formatter=format_phone if name == "Phone" else None)
-        if name == "Location" and loc.auto_name and suggested:
+        if name == "Location" and len(suggestions) > 1:
+            def use_suggestion(pick_key=f"g{gen}-{loc.id}-suggest"):
+                if st.session_state[pick_key]:
+                    st.session_state[name_key] = loc.info["Location"] = st.session_state[pick_key]
+                    loc.auto_name = False
+                st.session_state[pick_key] = None
+            st.selectbox("Suggested names from your lines", suggestions, index=None,
+                         key=f"g{gen}-{loc.id}-suggest", on_change=use_suggestion,
+                         placeholder="Pick one to use it as the Location", label_visibility="collapsed")
+        elif name == "Location" and loc.auto_name and suggested:
             st.caption("Filled in from your lines. Press Enter to keep it, or type your own.")
     if loc.info["Location"] != suggested:
-        loc.auto_name = False  # the user typed their own name
+        loc.auto_name = False  # the user typed or picked their own name
+    scenes = {"text": "\n".join(loc.scenes)}
+    bound_text("Scene(s)", scenes, "text", f"g{gen}-{loc.id}-scenes", area=True, height=80,
+               placeholder="One per line, e.g.\nINT City Hall - SHOOT\nEXT Polk St - PREP/WRAP")
+    loc.scenes = [line.strip() for line in scenes["text"].splitlines() if line.strip()]
     store = {"notes": loc.notes}
     bound_text("Notes", store, "notes", f"g{gen}-{loc.id}-notes", area=True, height=100,
                placeholder="Anything the permit office should know about this location")
@@ -409,18 +433,12 @@ with side_col:
 
 if loc.markers:
     st.subheader("Stars & text boxes")
-    st.caption("Type the words for each text box (e.g. WORKING VEHICLES, INT City Hall - SHOOT). "
-               "Empty text boxes are left off the PDF.")
-    marks_key = f"g{gen}-{loc.id}-marks-{len(loc.markers)}"
-    marks = st.data_editor(
-        snapshot(marks_key, lambda: [{"#": i, "Kind": m.kind, "Text": m.text}
-                                     for i, m in enumerate(loc.markers, start=1)]),
-        key=marks_key, hide_index=True, use_container_width=True, disabled=["#"],
-        column_config={"Kind": st.column_config.SelectboxColumn(options=MARKER_KINDS, required=True),
-                       "Text": st.column_config.TextColumn(width="large")},
-    )
-    loc.markers = [replace(m, kind=row["Kind"], text=row["Text"] or "")
-                   for m, row in zip(loc.markers, marks)]
+    st.caption("Numbered as on the map. Click one on the map to write in it, resize it or change "
+               "it. Empty text boxes are left off the PDF.")
+    st.dataframe([{"#": i, "Kind": m.kind, "Words": m.text if m.kind != STAR else "",
+                   "Size": m.size if m.kind != STAR else ""}
+                  for i, m in enumerate(loc.markers, start=1)],
+                 hide_index=True, use_container_width=True)
 
 if zones:
     labels = [f"{i} · {z.block} ({z.side})" for i, z in enumerate(zones, start=1)]

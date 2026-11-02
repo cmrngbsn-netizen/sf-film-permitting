@@ -59,6 +59,7 @@ def render_tiles(url, zoom, cx, cy):
 
 
 STAR_COLOR = (255, 140, 0)  # the orange star on the Film SF slides
+TEXT_PX = {"Small": 22, "Medium": 28, "Large": 38, "X-Large": 50}  # text box font, map pixels
 
 
 def star_points(x, y, r):
@@ -74,8 +75,8 @@ def star_points(x, y, r):
 def render_map(lines, markers=(), basemap=DEFAULT):
     """PNG bytes of curb zones and markers over a basemap (core.basemaps).
     lines: [(points [(lat, lon), ...], (r, g, b), label), ...]
-    markers: [(kind "Star" or "Text box", (lat, lon), text), ...]"""
-    every = [p for pts, _, _ in lines for p in pts] + [point for _, point, _ in markers]
+    markers: [(kind "Star" or "Text box", (lat, lon), text, size), ...]"""
+    every = [p for pts, _, _ in lines for p in pts] + [m[1] for m in markers]
     lats, lons = [p[0] for p in every], [p[1] for p in every]
     center = [(min(lons) + max(lons)) / 2, (min(lats) + max(lats)) / 2]
     # Closest zoom at which every zone fits with a margin around it.
@@ -110,9 +111,9 @@ def render_map(lines, markers=(), basemap=DEFAULT):
         draw.rectangle([box[0] - 8, box[1] - 6, box[2] + 8, box[3] + 6],
                        fill="white", outline=rgb + (255,), width=3)
         draw.text((x, y), label, fill="black", font=font, anchor="mm")
-    bold = ImageFont.load_default(size=28)
-    for kind, (lat, lon), text in markers:
+    for kind, (lat, lon), text, size in markers:
         x, y = to_px(lat, lon)
+        bold = ImageFont.load_default(size=TEXT_PX.get(size, TEXT_PX["Medium"]))
         if kind == "Star":
             draw.polygon(star_points(x, y, 26), fill=STAR_COLOR + (255,), outline=(90, 50, 0, 255), width=2)
         elif text.strip():

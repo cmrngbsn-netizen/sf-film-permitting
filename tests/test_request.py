@@ -12,11 +12,12 @@ def sample():
     req = Request()
     req.info.update({"Production": "Test Productions LLC", "Project": "Untitled Feature"})
     first = req.locations[0]
-    first.info.update({"Location": "City Hall, McAllister @ Larkin & Polk", "Scene": "INT City Hall - SHOOT",
+    first.info.update({"Location": "City Hall, McAllister @ Larkin & Polk",
                        "Contact": "Pat Example", "Phone": "(415) 555-0100"})
+    first.scenes = ["INT City Hall - SHOOT", "EXT Polk St - PREP"]
     first.notes = "Crew parking on Grove"
     first.lines = [Line([(37.7806, -122.4180), (37.7807, -122.4170)], "#1f77b4")]
-    first.markers = [Marker((37.7795, -122.4189), STAR), Marker((37.7801, -122.4175), TEXT, "INT City Hall")]
+    first.markers = [Marker((37.7795, -122.4189), STAR), Marker((37.7801, -122.4175), TEXT, "INT City Hall", "Large")]
     first.auto_name = False
     first.zones = {"123:1:4": {"Curb": "6 meters (6 general)", "Meters": "Metered", "Spaces": 8,
                                "Use": "Working vehicles"}}
@@ -37,6 +38,7 @@ def test_round_trip_keeps_everything():
     assert back.locations[0].zones == req.locations[0].zones
     assert back.locations[0].windows == req.locations[0].windows
     assert back.locations[0].notes == "Crew parking on Grove"
+    assert back.locations[0].scenes == ["INT City Hall - SHOOT", "EXT Polk St - PREP"]
     assert [loc.id for loc in back.locations] == [loc.id for loc in req.locations]
 
 
@@ -44,7 +46,7 @@ def test_new_location_copies_contact():
     req = sample()
     assert req.locations[1].info["Contact"] == "Pat Example"
     assert req.locations[1].info["Phone"] == "(415) 555-0100"
-    assert req.locations[1].info["Scene"] == ""
+    assert req.locations[1].scenes == []
 
 
 def test_removing_the_last_location_leaves_an_empty_one():
@@ -75,3 +77,12 @@ def test_format_phone():
     assert format_phone("415-935-1007 x12") == "415-935-1007 x12"
     assert format_phone(" 911 ") == "911"
     assert format_phone("") == ""
+
+
+def test_opens_version_2_scene_field():
+    v2 = ('{"format": "sf-film-parking-request", "version": 2, "info": {}, "locations": ['
+          '{"id": "a1", "info": {"Location": "City Hall", "Scene": "INT City Hall - SHOOT"}, '
+          '"markers": [{"point": [37.78, -122.42], "kind": "Text box", "text": "PICTURE"}]}]}')
+    loc = Request.from_json(v2).locations[0]
+    assert loc.scenes == ["INT City Hall - SHOOT"]
+    assert loc.markers[0].size == "Medium"

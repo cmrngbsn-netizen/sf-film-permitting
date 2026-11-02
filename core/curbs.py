@@ -149,3 +149,17 @@ def place_name(zones):
     z = max(zones, key=lambda z: z.length_ft)
     cross = " & ".join(short_street(c) for c in z.near_cross.split(" & ")) if z.near_cross else ""
     return f"{short_street(z.street)} @ {cross}" if cross else short_street(z.street)
+
+
+def place_names(zones_by_line):
+    """Name suggestions for a location with several lines: one per line, then a combined
+    one ("Grant @ Washington & Clay" when they share a street, else "A / B")."""
+    names = list(dict.fromkeys(n for n in (place_name(zs) for zs in zones_by_line) if n))
+    if len(names) > 1:
+        streets = {n.split(" @ ")[0] for n in names}
+        if len(streets) == 1 and all(" @ " in n for n in names):
+            crosses = list(dict.fromkeys(n.split(" @ ", 1)[1] for n in names))
+            names.append(f"{streets.pop()} @ {' & '.join(crosses)}")
+        else:
+            names.append(" / ".join(names))
+    return names

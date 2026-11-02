@@ -10,7 +10,7 @@ from datetime import date, time
 
 from core.summary import Window
 
-FORMAT_VERSION = 2  # 2: lines carry a color; locations have markers
+FORMAT_VERSION = 3  # 2: lines carry a color, locations have markers; 3: scene list, marker size
 
 # Line colors to draw with. The first is the default; a blue line starts as "Picture".
 LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
@@ -18,11 +18,13 @@ LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
 DEFAULT_COLOR = LINE_COLORS["Red"]
 STAR, TEXT = "Star", "Text box"
 MARKER_KINDS = [STAR, TEXT]
+TEXT_SIZES = ["Small", "Medium", "Large", "X-Large"]
 
 # Shared by every page of the request.
 REQUEST_FIELDS = ["Production", "Project", "Email", "Film SF permit #"]
-# Set per location (the Film SF slides change contact between locations).
-LOCATION_FIELDS = ["Location", "Scene", "Contact", "Phone"]
+# Set per location (the Film SF slides change contact between locations). Scenes are a
+# separate list, since one location can serve several scenes.
+LOCATION_FIELDS = ["Location", "Contact", "Phone"]
 
 
 def new_id():
@@ -51,6 +53,7 @@ class Marker:
     point: tuple  # (lat, lon)
     kind: str = STAR
     text: str = ""
+    size: str = "Medium"  # text box size, one of TEXT_SIZES
 
 
 @dataclass
@@ -58,6 +61,7 @@ class Location:
     id: str = field(default_factory=new_id)
     info: dict = field(default_factory=lambda: {name: "" for name in LOCATION_FIELDS})
     notes: str = ""
+    scenes: list = field(default_factory=list)   # ["INT City Hall - SHOOT", ...]
     lines: list = field(default_factory=list)    # [Line, ...]
     markers: list = field(default_factory=list)  # [Marker, ...]
     zones: dict = field(default_factory=dict)    # zone id -> edited row (Curb, Meters, Spaces, Use)
@@ -96,9 +100,10 @@ class Request:
                 "id": loc.id,
                 "info": loc.info,
                 "notes": loc.notes,
+                "scenes": loc.scenes,
                 "lines": [{"points": [[lat, lon] for lat, lon in line.points], "color": line.color}
                           for line in loc.lines],
-                "markers": [{"point": list(m.point), "kind": m.kind, "text": m.text}
+                "markers": [{"point": list(m.point), "kind": m.kind, "text": m.text, "size": m.size}
                             for m in loc.markers],
                 "auto_name": loc.auto_name,
                 "zones": loc.zones,
@@ -117,8 +122,11 @@ class Request:
             id=raw.get("id") or new_id(),
             info={name: raw.get("info", {}).get(name, "") for name in LOCATION_FIELDS},
             notes=raw.get("notes", ""),
+            # Version 2 had one Scene text field.
+            scenes=raw.get("scenes") or ([raw["info"]["Scene"]] if raw.get("info", {}).get("Scene") else []),
             lines=[_line_in(line) for line in raw.get("lines", [])],
-            markers=[Marker(tuple(m["point"]), m.get("kind", STAR), m.get("text", ""))
+            markers=[Marker(tuple(m["point"]), m.get("kind", STAR), m.get("text", ""),
+                            m.get("size", "Medium"))
                      for m in raw.get("markers", [])],
             auto_name=raw.get("auto_name", not raw.get("info", {}).get("Location")),
             zones=raw.get("zones", {}),
