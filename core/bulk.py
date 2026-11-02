@@ -11,10 +11,10 @@ import math
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import datetime, time
 
-from core.streets import pretty_street, street_key, to_latlon, to_xy
-from core.summary import PICTURE, USES, WORKING, Window
+from core.streets import pretty_street, street_key, to_latlon
+from core.summary import USES, WORKING, Window
 
 COLUMNS = ["Location", "Street", "From", "To", "Side", "Use", "Date", "Start", "End"]
 REQUIRED = ["Street", "From", "To", "Side"]

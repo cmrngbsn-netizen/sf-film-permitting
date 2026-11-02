@@ -2,8 +2,9 @@
 
 Leaflet's draw tool only knows plain lines and pins, and puts its buttons on the map. This
 script:
-  - puts every control in a panel beside the map instead (tools, curb color, lock, zoom,
-    address search, undo, clear), and switches the map into a tool as soon as it is picked;
+  - puts every control around the map instead: a rail of tool icons on the left (tools, undo,
+    curb color) and a strip above it (search, lock, zoom, clear, help), each with a hover tip,
+    and switches the map into a tool as soon as it is picked;
   - tags every shape with its details (a line's kind and color; a marker's kind, words,
     size and border color), so they come back to the app with the drawing
     (streamlit-folium sends each shape's GeoJSON properties);
@@ -46,35 +47,49 @@ function sfArrow(line) {
 
 STYLE = """
 .leaflet-draw{display:none}
-.sf-wrap{display:flex!important;width:100%!important;gap:8px}
-.sf-wrap>#map_div{flex:1 1 auto;width:auto!important;min-width:0;border-radius:10px}
-.sf-panel{flex:0 0 188px;box-sizing:border-box;padding:10px;background:#f5f5f7;border:1px solid #e1e1e6;
-  border-radius:12px;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-  color:#1d1d1f;overflow-y:auto;display:flex;flex-direction:column;gap:7px}
-.sf-sec{font-size:10.5px;font-weight:700;color:#6e6e73;text-transform:uppercase;letter-spacing:.05em;margin-top:3px}
-.sf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
-.sf-panel button{border:1px solid #d2d2d7;background:#fff;border-radius:8px;padding:6px 7px;
-  font:600 12px -apple-system,Helvetica,Arial,sans-serif;color:#1d1d1f;cursor:pointer;text-align:left;
-  white-space:nowrap}
-.sf-panel button:hover{border-color:#0071e3}
-.sf-panel button:disabled{opacity:.4;cursor:default;border-color:#d2d2d7}
-.sf-panel button.sf-on{background:#0071e3;border-color:#0071e3;color:#fff}
-.sf-panel button.sf-erase.sf-on,.sf-panel button.sf-arm{background:#d70015;border-color:#d70015;color:#fff}
-.sf-panel button.sf-wide{grid-column:span 2;text-align:center}
-.sf-colors{display:flex;gap:6px;flex-wrap:wrap}
-.sf-panel .sf-swatch{width:22px;height:22px;padding:0;border-radius:50%;border:2px solid #fff;
-  box-shadow:0 0 0 1px #c7c7cc}
-.sf-panel .sf-swatch.sf-on{box-shadow:0 0 0 2px #0071e3}
-.sf-hint{background:#fff;border:1px solid #e1e1e6;border-radius:8px;padding:7px 8px;font-size:12px;
-  line-height:1.35;color:#3a3a3c}
-.sf-hint .sf-acts{display:flex;gap:5px;margin-top:6px}
-.sf-hint .sf-acts button{flex:1;text-align:center}
-.sf-search{display:flex;gap:4px}
-.sf-search input{flex:1;min-width:0;border:1px solid #d2d2d7;border-radius:8px;padding:6px 7px;font:12px -apple-system,Helvetica,Arial,sans-serif;outline:none}
-.sf-search input:focus{border-color:#0071e3;box-shadow:0 0 0 3px rgba(0,113,227,.18)}
-.sf-found{font-size:11px;color:#6e6e73;line-height:1.3}
-.sf-zoom{display:flex;gap:5px}
-.sf-zoom button{flex:1;text-align:center}
+.sf-wrap{display:flex!important;width:100%!important;border:1px solid #dcdce1;border-radius:12px;overflow:hidden;
+  font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#1d1d1f;background:#fff}
+.sf-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;position:relative}
+.sf-main>#map_div{flex:1 1 auto;width:auto!important;height:auto!important;min-height:0}
+.sf-rail{flex:0 0 44px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;
+  background:#f7f7f9;border-right:1px solid #e3e3e8;position:relative;z-index:1300}
+.sf-sep{width:24px;height:1px;background:#dcdce1;margin:4px 0}
+.sf-wrap button{border:0;background:transparent;cursor:pointer;color:#3a3a3c;padding:0;font:inherit}
+.sf-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;position:relative}
+.sf-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sf-icon:hover{background:#e8e8ed}
+.sf-icon.sf-on{background:#0071e3;color:#fff}
+.sf-icon.sf-erase.sf-on,.sf-icon.sf-arm{background:#d70015;color:#fff}
+.sf-icon:disabled{opacity:.35;cursor:default;background:transparent}
+.sf-wrap [data-tip]:hover::after{content:attr(data-tip);position:absolute;z-index:3000;pointer-events:none;
+  background:#1d1d1f;color:#fff;font:12px/1.4 -apple-system,Helvetica,Arial,sans-serif;padding:6px 9px;
+  border-radius:7px;white-space:pre-line;width:max-content;max-width:230px;text-align:left}
+.sf-rail [data-tip]:hover::after{left:40px;top:50%;transform:translateY(-50%)}
+.sf-strip [data-tip]:hover::after{right:0;top:38px}
+.sf-rail .sf-swatch{width:18px;height:18px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #c7c7cc;margin:2px 0;position:relative}
+.sf-rail .sf-swatch.sf-on{box-shadow:0 0 0 2px #0071e3}
+.sf-strip{flex:0 0 40px;display:flex;align-items:center;gap:4px;padding:0 6px 0 12px;border-bottom:1px solid #e3e3e8;
+  background:#fff;position:relative;z-index:1100}
+.sf-status{flex:1;min-width:0;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden}
+.sf-status b{font-weight:600}
+.sf-status span{color:#6e6e73;overflow:hidden;text-overflow:ellipsis}
+.sf-pill{border:1px solid #d2d2d7!important;border-radius:7px!important;padding:3px 10px!important;font-weight:600!important;
+  font-size:12px!important;background:#fff!important}
+.sf-pill.sf-go{background:#0071e3!important;border-color:#0071e3!important;color:#fff!important}
+.sf-search{display:flex;align-items:center;gap:4px;border:1px solid #d2d2d7;border-radius:8px;padding:0 4px 0 8px;height:28px;width:210px}
+.sf-search:focus-within{border-color:#0071e3;box-shadow:0 0 0 3px rgba(0,113,227,.18)}
+.sf-search svg{width:15px;height:15px;fill:none;stroke:#8e8e93;stroke-width:2;flex:none}
+.sf-search input{flex:1;min-width:0;border:0;outline:none;font:12px -apple-system,Helvetica,Arial,sans-serif;background:transparent}
+.sf-found{font-size:11px;color:#6e6e73;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sf-strip .sf-icon{width:30px;height:30px}
+.sf-strip .sf-icon svg{width:18px;height:18px}
+.sf-help{position:absolute;top:48px;right:8px;z-index:1200;width:290px;background:#fff;border-radius:12px;
+  box-shadow:0 8px 28px rgba(0,0,0,.22);padding:12px 14px;display:none}
+.sf-help.sf-open{display:block}
+.sf-help h4{margin:0 0 8px;font-size:13px}
+.sf-help .sf-hrow{display:flex;gap:10px;align-items:flex-start;margin:7px 0;font-size:12px;line-height:1.35;color:#3a3a3c}
+.sf-help .sf-hrow svg{width:18px;height:18px;flex:none;fill:none;stroke:#1d1d1f;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sf-help .sf-x{position:absolute;top:8px;right:10px;font-size:18px;color:#8e8e93}
 .sf-drawing .leaflet-marker-icon:not(.leaflet-mouse-marker):not(.leaflet-editing-icon){pointer-events:none}
 .sf-erasing .leaflet-interactive{cursor:pointer!important}
 .sf-doomed{stroke:#ff3b30;stroke-dasharray:7 5}
@@ -107,17 +122,49 @@ STYLE = """
 .sf-delete{background:transparent;color:#d70015}
 """
 
+# Line-art icons (24px grid), drawn with the button's text color.
+ICONS = {
+    "move": '<path d="M6 3l12 7-5.5 1.5L10 17z"/>',
+    "curb": '<path d="M4 18l6-6 4 3 6-9"/><circle cx="4" cy="18" r="1.6"/><circle cx="20" cy="6" r="1.6"/>',
+    "arrow": '<path d="M5 19L19 5M10 5h9v9"/>',
+    "star": '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+    "text": '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M8.5 10h7M12 10v5"/>',
+    "reshape": '<path d="M5 8l8-4 6 7-5 9-8-3z"/><rect x="3.5" y="6.5" width="3" height="3"/><rect x="11.5" y="2.5" width="3" height="3"/>'
+               '<rect x="17.5" y="9.5" width="3" height="3"/>',
+    "erase": '<path d="M19 20H8.5l-4.2-4.3a1 1 0 010-1.4l10-10a1 1 0 011.4 0l5 5a1 1 0 010 1.4L12.5 20"/><path d="M18 13.3L11.7 7"/>',
+    "undo": '<path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 010 8h-1"/>',
+    "lock": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>',
+    "unlock": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 017.6-1.7"/>',
+    "zoomin": '<circle cx="10" cy="10" r="7"/><path d="M21 21l-6-6M7 10h6M10 7v6"/>',
+    "zoomout": '<circle cx="10" cy="10" r="7"/><path d="M21 21l-6-6M7 10h6"/>',
+    "trash": '<path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 002 2h8a2 2 0 002-2l1-12M9 7V4h6v3"/>',
+    "help": '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 114 2c-.9.6-1.5 1.1-1.5 2.2M12 17h.01"/>',
+    "search": '<circle cx="10" cy="10" r="7"/><path d="M21 21l-6-6"/>',
+}
+
+# (tool, name, what it does): the hover tip and the help card.
+TOOLS = [
+    ("move", "Move map", "Drag to move the map. Click a text box to edit it."),
+    ("curb", "Curb line", "Click along the curb you need. Click the last point again to finish. "
+                          "Lines can turn corners."),
+    ("arrow", "Arrow", "Start at a text box or star and click toward the line it points at. "
+                       "The head goes at the last point."),
+    ("star", "Star", "Click the map to drop a numbered star."),
+    ("text", "Text box", "Click the map to place a text box, then type in it. Click it later to "
+                         "change the words, size or border."),
+    ("reshape", "Reshape", "Drag a line's white squares, or a star or text box, to move it."),
+    ("erase", "Erase", "Click anything on the map to delete it. Lines turn red when you're on them."),
+]
+
+# The one-line instruction beside the tool's name while it's in use.
 HINTS = {
-    "move": "Drag to move the map. Pinch (or Ctrl + scroll) or use + / &minus; to zoom. "
-            "Click a text box to edit it.",
-    "curb": "Click along the curb. Click the last point again (or <b>Finish</b>) to end the line. "
-            "Lines can turn corners.",
-    "arrow": "Click from a text box or star to the line it points at. The head goes at the last "
-             "point. Click it again (or <b>Finish</b>) to end.",
-    "star": "Click the map to drop a star.",
-    "text": "Click the map to place a text box, then type in it.",
-    "reshape": "Drag a line's white squares, or a star or text box, to move it.",
-    "erase": "Click anything on the map to delete it.",
+    "move": "",
+    "curb": "click along the curb, then click the last point again",
+    "arrow": "start at a text box or star; the head goes at the last point",
+    "star": "click the map to drop a star",
+    "text": "click the map to place a text box",
+    "reshape": "drag a line's squares, or a star or text box",
+    "erase": "click anything to delete it",
 }
 
 
@@ -135,7 +182,7 @@ class MapTools(MacroElement):
           {{ this.arrow_js }}
           var map = {{ this._parent.get_name() }}, group = {{ this.group.get_name() }};
           var PALETTE = {{ this.palette }}, ARROW = {{ this.arrow }}, TEXT_COLOR = {{ this.text_color }};
-          var PX = {{ this.px }}, HINTS = {{ this.hints }};
+          var PX = {{ this.px }}, HINTS = {{ this.hints }}, TOOLS = {{ this.tools }}, ICONS = {{ this.icons }};
           var savedLines = {{ this.saved_lines }}, savedMarks = {{ this.saved_marks }};
 
           function load(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } }
@@ -277,54 +324,74 @@ class MapTools(MacroElement):
             if (tool === "erase") remove(e.propagatedFrom || e.layer);
           });
 
-          // ---- The panel beside the map ----
-          var box = map.getContainer();
-          box.parentNode.classList.add("sf-wrap");
-          var panel = document.createElement("div");
-          panel.className = "sf-panel";
-          var TOOLS = [["move", "&#9995; Move map"], ["curb", "&#9473; Curb line"], ["arrow", "&#10140; Arrow"],
-                       ["star", "&#9733; Star"], ["text", "&#9645; Text box"], ["reshape", "&#10021; Reshape"],
-                       ["erase", "&#9003; Erase"]];
-          panel.innerHTML =
-            '<div class="sf-sec">Tools</div><div class="sf-grid">' +
-            TOOLS.map(function (t) {
-              return '<button type="button" data-tool="' + t[0] + '"' + (t[0] === "erase" ? ' class="sf-erase"' : '') +
-                     '>' + t[1] + '</button>';
-            }).join("") + '<button type="button" class="sf-undo">&#8630; Undo</button></div>' +
-            '<div class="sf-hint"></div>' +
-            '<div class="sf-sec">Curb line color</div><div class="sf-colors">' +
+          // ---- Controls around the map: a tool rail on the left, a strip above ----
+          // Tips are "Name" + NL + "what it does": an escaped newline in a string comes out as a literal backslash-n after streamlit-folium.
+          var NL = String.fromCharCode(10);
+          function svg(name) { return '<svg viewBox="0 0 24 24">' + ICONS[name] + '</svg>'; }
+          function icon(cls, name, tip, extra) {
+            return '<button type="button" class="sf-icon ' + cls + '" data-tip="' + tip + '"' + (extra || "") + '>' +
+                   svg(name) + '</button>';
+          }
+          var box = map.getContainer(), height = box.offsetHeight;
+          var wrap = box.parentNode, main = document.createElement("div"), rail = document.createElement("div");
+          wrap.classList.add("sf-wrap");
+          wrap.style.height = height + "px";
+          main.className = "sf-main";
+          rail.className = "sf-rail";
+          rail.innerHTML = TOOLS.map(function (t) {
+              return icon(t[0] === "erase" ? "sf-erase" : "", t[0], t[1] + NL + t[2], ' data-tool="' + t[0] + '"');
+            }).join("") +
+            icon("sf-undo", "undo", "Undo" + NL + "Removes the last point while drawing, otherwise the last thing you added.") +
+            '<div class="sf-sep"></div>' +
             PALETTE.map(function (c) {
-              return '<button type="button" class="sf-swatch" data-color="' + c[1] + '" title="' + c[0] +
-                     '" style="background:' + c[1] + '"></button>';
-            }).join("") + '</div>' +
-            '<div class="sf-sec">Map</div>' +
-            '<div class="sf-zoom"><button type="button" class="sf-lock"></button>' +
-            '<button type="button" class="sf-in" title="Zoom in">+</button>' +
-            '<button type="button" class="sf-out" title="Zoom out">&minus;</button></div>' +
-            '<form class="sf-search"><input placeholder="Search an address" aria-label="Search an address">' +
-            '<button type="submit">Go</button></form><div class="sf-found"></div>' +
-            '<div class="sf-sec">Start over</div>' +
-            '<button type="button" class="sf-clear">Clear everything</button>';
-          box.parentNode.insertBefore(panel, box);
+              return '<button type="button" class="sf-swatch" data-color="' + c[1] + '" data-tip="' + c[0] +
+                     ' curb line" style="background:' + c[1] + '"></button>';
+            }).join("");
+          var strip = document.createElement("div");
+          strip.className = "sf-strip";
+          strip.innerHTML = '<div class="sf-status"></div>' +
+            '<form class="sf-search">' + svg("search") + '<input placeholder="Search an address or corner" ' +
+            'aria-label="Search an address or corner"></form><div class="sf-found"></div>' +
+            icon("sf-lock", "unlock", "Lock map" + NL + "Keeps the map still while you place things.") +
+            icon("sf-in", "zoomin", "Zoom in" + NL + "Or pinch / Ctrl + scroll on the map.") +
+            icon("sf-out", "zoomout", "Zoom out") +
+            icon("sf-clear", "trash", "Clear everything" + NL + "Removes every line, arrow, star and text box. Click twice.") +
+            icon("sf-helpbtn", "help", "How to use the map");
+          var help = document.createElement("div");
+          help.className = "sf-help";
+          help.innerHTML = '<button type="button" class="sf-x" aria-label="Close">&times;</button><h4>Map tools</h4>' +
+            TOOLS.map(function (t) {
+              return '<div class="sf-hrow">' + svg(t[0]) + '<div><b>' + t[1] + '.</b> ' + t[2] + '</div></div>';
+            }).join("") +
+            '<div class="sf-hrow">' + svg("lock") + '<div><b>Lock</b> keeps the map still. Scrolling the page ' +
+            'passes over the map; pinch or Ctrl + scroll to zoom.</div></div>';
+          wrap.insertBefore(rail, box);
+          wrap.insertBefore(main, box);
+          main.appendChild(strip);
+          main.appendChild(box);
+          main.appendChild(help);
           map.invalidateSize();
-          var $ = function (s) { return panel.querySelector(s); };
+          var $ = function (s) { return wrap.querySelector(s); };
+          $(".sf-helpbtn").onclick = function () { help.classList.toggle("sf-open"); };
+          help.querySelector(".sf-x").onclick = function () { help.classList.remove("sf-open"); };
 
           function showTool() {
-            panel.querySelectorAll("[data-tool]").forEach(function (b) {
+            wrap.querySelectorAll("[data-tool]").forEach(function (b) {
               b.classList.toggle("sf-on", b.dataset.tool === tool);
             });
             box.classList.toggle("sf-erasing", tool === "erase");
             // While drawing, clicks on stars and text boxes go to the map, so an arrow can start on one.
             box.classList.toggle("sf-drawing", ["curb", "arrow", "star", "text"].indexOf(tool) >= 0);
+            var name = TOOLS.filter(function (t) { return t[0] === tool; })[0][1];
             var drawsLine = tool === "curb" || tool === "arrow";
-            $(".sf-hint").innerHTML = HINTS[tool] + (drawsLine ?
-              '<div class="sf-acts"><button type="button" class="sf-finish">Finish</button>' +
-              '<button type="button" class="sf-cancel">Cancel</button></div>' : "");
+            $(".sf-status").innerHTML = '<b>' + name + '</b><span>' + HINTS[tool] + '</span>' + (drawsLine ?
+              '<button type="button" class="sf-pill sf-go sf-finish">Finish</button>' +
+              '<button type="button" class="sf-pill sf-cancel">Cancel</button>' : "");
             if (drawsLine) {
               $(".sf-finish").onclick = function () { if (handler && handler.completeShape) handler.completeShape(); };
               $(".sf-cancel").onclick = function () { setTool("move"); };
             }
-            panel.querySelectorAll(".sf-colors .sf-swatch").forEach(function (b) {
+            rail.querySelectorAll(".sf-swatch").forEach(function (b) {
               b.classList.toggle("sf-on", b.dataset.color === color);
             });
           }
@@ -367,10 +434,10 @@ class MapTools(MacroElement):
             showTool();
           }
 
-          panel.querySelectorAll("[data-tool]").forEach(function (b) {
+          rail.querySelectorAll("[data-tool]").forEach(function (b) {
             b.onclick = function () { setTool(b.dataset.tool); };
           });
-          panel.querySelectorAll(".sf-colors .sf-swatch").forEach(function (b) {
+          rail.querySelectorAll(".sf-swatch").forEach(function (b) {
             b.onclick = function () {
               color = b.dataset.color;
               store("sf-color", color);
@@ -394,16 +461,16 @@ class MapTools(MacroElement):
           };
 
           // Clear everything takes a second click, so it can't happen by accident.
-          var armed = null;
+          var armed = null, CLEAR_TIP = $(".sf-clear").dataset.tip;
           function disarm() {
             clearTimeout(armed); armed = null;
             $(".sf-clear").classList.remove("sf-arm");
-            $(".sf-clear").textContent = "Clear everything";
+            $(".sf-clear").dataset.tip = CLEAR_TIP;
           }
           $(".sf-clear").onclick = function () {
             if (!armed) {
               this.classList.add("sf-arm");
-              this.textContent = "Click again to clear";
+              this.dataset.tip = "Click again to clear everything";
               armed = setTimeout(disarm, 3000);
               return;
             }
@@ -420,7 +487,8 @@ class MapTools(MacroElement):
             ["dragging", "touchZoom", "doubleClickZoom", "boxZoom", "keyboard"].forEach(function (h) {
               if (map[h]) locked ? map[h].disable() : map[h].enable();
             });
-            $(".sf-lock").innerHTML = locked ? "&#128274; Locked" : "&#128275; Lock";
+            $(".sf-lock").innerHTML = svg(locked ? "lock" : "unlock");
+            $(".sf-lock").dataset.tip = locked ? "Map locked" + NL + "Click to unlock." : "Lock map" + NL + "Keeps the map still while you place things.";
             $(".sf-lock").classList.toggle("sf-on", locked);
             $(".sf-in").disabled = $(".sf-out").disabled = locked;
           }
@@ -495,6 +563,7 @@ class MapTools(MacroElement):
               found.addLayer(L.circleMarker(hit.ll, {radius: 9, color: "#0071e3", weight: 3, fillOpacity: 0.2,
                                                      interactive: false}));
               $(".sf-found").textContent = hit.name;
+              setTimeout(function () { $(".sf-found").textContent = ""; }, 6000);  // keep the strip uncluttered
             }).catch(function () { $(".sf-found").textContent = "Search isn't available right now."; });
           };
 
@@ -544,28 +613,11 @@ class MapTools(MacroElement):
         self.text_color = json.dumps(text_color)
         self.px = json.dumps(px)
         self.hints = json.dumps(HINTS)
+        self.tools = json.dumps(TOOLS)
+        self.icons = json.dumps(ICONS)
         self.street_types = json.dumps(sorted(STREET_TYPES))
         self.saved_lines = json.dumps([{"kind": "curb", "color": ln.color} for ln in lines]
                                       + [{"kind": "arrow", "color": ARROW_COLOR} for _ in arrows])
         # "</" is escaped so words like "</script>" in a text box can't end the script early.
         self.saved_marks = json.dumps([{"kind": m.kind, "text": m.text, "size": m.size, "color": m.color}
                                        for m in markers]).replace("</", "<\\/")
-
-
-class ArrowHeads(MacroElement):
-    """Arrowheads for arrows on a map without the drawing tools (the review map)."""
-    _template = Template("""
-        {% macro script(this, kwargs) %}
-        (function () {
-          {{ this.arrow_js }}
-          {% for line in this.lines %}sfArrow({{ line.get_name() }});
-          {% endfor %}
-        })();
-        {% endmacro %}
-    """)
-
-    def __init__(self, lines):
-        super().__init__()
-        self._name = "ArrowHeads"
-        self.arrow_js = ARROW_JS
-        self.lines = lines
