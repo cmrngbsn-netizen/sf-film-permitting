@@ -22,6 +22,7 @@ class CurbZone:
     between: str              # "Clay St and Washington St"
     length_ft: float
     points: list = field(repr=False)  # (lat, lon) of the drawn line on this block
+    near_cross: str = ""                              # cross street at the end the zone is nearer
     cnn: int = field(default=0, repr=False)          # the block, for curb data lookups
     side_sign: int = field(default=1, repr=False)    # +1 left of the block, -1 right
     along_m: tuple = field(default=(0, 0), repr=False)  # stretch of the block covered
@@ -100,6 +101,12 @@ class CurbZoner:
         between = (f"{self.index.cross_streets(seg['f_node_cnn'], own)} and "
                    f"{self.index.cross_streets(seg['t_node_cnn'], own)}")
         length_m = max(alongs) - min(alongs) + SAMPLE_M  # each sample stands for SAMPLE_M of curb
+        # The cross street at whichever end of the block the zone sits closer to; a dead
+        # end or mid-block break doesn't name a place, so use the other end then.
+        ends = [self.index.cross_streets(seg[f"{e}_node_cnn"], own) for e in ("f", "t")]
+        nearer = 0 if sum(alongs) / len(alongs) < self.index.seg_length[run[0][0]] / 2 else 1
+        near_cross = next((c for c in (ends[nearer], ends[1 - nearer])
+                           if c not in ("mid-block", "unknown")), "")
         return CurbZone(
             street=pretty_street(own),
             block=self.block_label(seg),
@@ -107,6 +114,7 @@ class CurbZoner:
             between=between,
             length_ft=length_m / M_PER_FT,
             points=[to_latlon(h[2], h[3]) for h in run],
+            near_cross=near_cross,
             cnn=seg["cnn"],
             side_sign=Counter(h[8] for h in run).most_common(1)[0][0],
             along_m=(min(alongs), max(alongs)),
@@ -121,3 +129,23 @@ class CurbZoner:
             out.extend((ax + (bx - ax) * k / n, ay + (by - ay) * k / n) for k in range(n))
         out.append(pts[-1])
         return out
+
+
+# Street types left off in a short place name ("Grant @ Washington"), as on the Film SF slides.
+SHORT_DROP = {"St", "Ave", "Blvd", "Pl", "Dr", "Ct", "Ln", "Ter", "Rd", "Aly", "Way", "Hwy"}
+
+
+def short_street(name):
+    """"Grant Ave" -> "Grant", "Walter U Lum Pl" -> "Walter U Lum"."""
+    words = name.split()
+    return " ".join(words[:-1]) if len(words) > 1 and words[-1] in SHORT_DROP else name
+
+
+def place_name(zones):
+    """A location name like "Grant @ Washington", from the longest zone's street and the
+    cross street it is nearest. Empty when there are no zones."""
+    if not zones:
+        return ""
+    z = max(zones, key=lambda z: z.length_ft)
+    cross = " & ".join(short_street(c) for c in z.near_cross.split(" & ")) if z.near_cross else ""
+    return f"{short_street(z.street)} @ {cross}" if cross else short_street(z.street)

@@ -58,10 +58,24 @@ def render_tiles(url, zoom, cx, cy):
     return image
 
 
-def render_map(lines, basemap=DEFAULT):
-    """PNG bytes of curb zones over a basemap (core.basemaps).
-    lines: [(points [(lat, lon), ...], (r, g, b), label), ...]"""
-    every = [p for pts, _, _ in lines for p in pts]
+STAR_COLOR = (255, 140, 0)  # the orange star on the Film SF slides
+
+
+def star_points(x, y, r):
+    """Corners of a five-pointed star centered on (x, y)."""
+    pts = []
+    for i in range(10):
+        angle = math.pi / 2 + i * math.pi / 5
+        radius = r if i % 2 == 0 else r * 0.42
+        pts.append((x + radius * math.cos(angle), y - radius * math.sin(angle)))
+    return pts
+
+
+def render_map(lines, markers=(), basemap=DEFAULT):
+    """PNG bytes of curb zones and markers over a basemap (core.basemaps).
+    lines: [(points [(lat, lon), ...], (r, g, b), label), ...]
+    markers: [(kind "Star" or "Text box", (lat, lon), text), ...]"""
+    every = [p for pts, _, _ in lines for p in pts] + [point for _, point, _ in markers]
     lats, lons = [p[0] for p in every], [p[1] for p in every]
     center = [(min(lons) + max(lons)) / 2, (min(lats) + max(lats)) / 2]
     # Closest zoom at which every zone fits with a margin around it.
@@ -96,6 +110,17 @@ def render_map(lines, basemap=DEFAULT):
         draw.rectangle([box[0] - 8, box[1] - 6, box[2] + 8, box[3] + 6],
                        fill="white", outline=rgb + (255,), width=3)
         draw.text((x, y), label, fill="black", font=font, anchor="mm")
+    bold = ImageFont.load_default(size=28)
+    for kind, (lat, lon), text in markers:
+        x, y = to_px(lat, lon)
+        if kind == "Star":
+            draw.polygon(star_points(x, y, 26), fill=STAR_COLOR + (255,), outline=(90, 50, 0, 255), width=2)
+        elif text.strip():
+            # A white text box with a dark border, like "WORKING VEHICLES" on the slides.
+            box = draw.multiline_textbbox((x, y), text.strip(), font=bold, anchor="mm", align="center")
+            draw.rectangle([box[0] - 12, box[1] - 10, box[2] + 12, box[3] + 10],
+                           fill=(255, 255, 255, 240), outline=(40, 40, 40, 255), width=3)
+            draw.multiline_text((x, y), text.strip(), fill="black", font=bold, anchor="mm", align="center")
     credit_font = ImageFont.load_default(size=20)
     box = draw.textbbox((MAP_SIZE[0] - 12, MAP_SIZE[1] - 10), basemap.credit, font=credit_font, anchor="rd")
     draw.rectangle([box[0] - 8, box[1] - 6, MAP_SIZE[0], MAP_SIZE[1]], fill=(255, 255, 255, 220))
@@ -113,6 +138,7 @@ class Page:
     map_png: bytes
     fields: dict  # {label: text or [lines]} in table order; empty values are left out
     notes: str = ""
+    legend: list = None  # [(label, (r, g, b)), ...]; the document legend when not set
 
 
 def build_pdf(pages, legend, project="", created=None):
@@ -134,8 +160,11 @@ def build_pdf(pages, legend, project="", created=None):
         lines = value if isinstance(value, list) else [value]
         return Paragraph("<br/>".join(escape(v) for v in lines), body)
 
-    key = "&nbsp;&nbsp;&nbsp;".join(
-        f'<font color="#{r:02x}{g:02x}{b:02x}">&#9632;</font> {escape(name)}' for name, (r, g, b) in legend)
+    def key(entries):
+        return "&nbsp;&nbsp;&nbsp;".join(
+            f'<font color="#{r:02x}{g:02x}{b:02x}">&#9632;</font> {escape(name)}'
+            for name, (r, g, b) in entries)
+
     heading = "Parking Request" + (f" - {escape(project)}" if project else "")
 
     story = []
@@ -154,7 +183,7 @@ def build_pdf(pages, legend, project="", created=None):
                       "Film SF and SFMTA.", small),
             Spacer(1, 8),
             PdfImage(io.BytesIO(page.map_png), width=map_w, height=map_h),
-            Paragraph(key, small),
+            Paragraph(key(page.legend if page.legend is not None else legend), small),
             Spacer(1, 10),
         ]
         rows = [[Paragraph(f"{k.upper()}:", label), cell(v)] for k, v in page.fields.items() if v]

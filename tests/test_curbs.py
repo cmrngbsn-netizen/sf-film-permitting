@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.curbs import CurbZoner
+from core.curbs import CurbZoner, place_name, short_street
 from core.streets import StreetIndex, to_latlon, to_xy
 
 
@@ -65,3 +65,19 @@ def test_line_around_a_corner_gives_two_zones(zoner):
 def test_line_far_from_streets_gives_no_zones(zoner):
     # Middle of the Golden Gate Park polo field.
     assert zoner.zones([(37.7678, -122.4925), (37.7680, -122.4915)]) == []
+
+
+def test_place_name_uses_the_nearer_cross_street(zoner):
+    clay, wash = corner(zoner, "GRANT AVE", "CLAY ST"), corner(zoner, "GRANT AVE", "WASHINGTON ST")
+    # Mostly the Washington end of the block.
+    assert place_name(zoner.zones(curb_line(clay, wash, 6, frac=(0.45, 0.97)))) == "Grant @ Washington"
+    # Mostly the Clay end.
+    assert place_name(zoner.zones(curb_line(clay, wash, 6, frac=(0.03, 0.55)))) == "Grant @ Clay"
+    assert place_name([]) == ""
+
+
+def test_short_street():
+    assert short_street("Grant Ave") == "Grant"
+    assert short_street("Walter U Lum Pl") == "Walter U Lum"
+    assert short_street("Broadway") == "Broadway"
+    assert short_street("The Embarcadero") == "The Embarcadero"

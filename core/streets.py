@@ -90,6 +90,7 @@ class StreetIndex:
         # Every straight piece of every block, flattened for vectorized distance math.
         self.segments = [f["properties"] for f in segments]
         starts, stops, owner, offset = [], [], [], []
+        self.seg_length = []  # meters, per block
         for i, f in enumerate(segments):
             pts = [to_xy(lat, lon) for lon, lat in f["geometry"]["coordinates"]]
             along = 0.0
@@ -99,6 +100,7 @@ class StreetIndex:
                 owner.append(i)
                 offset.append(along)  # distance from the block's start to this piece
                 along += math.dist(a, b)
+            self.seg_length.append(along)
         self.piece_a = np.array(starts)
         self.piece_b = np.array(stops)
         self.piece_owner = np.array(owner)

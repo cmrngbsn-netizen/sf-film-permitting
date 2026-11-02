@@ -4,7 +4,7 @@ from datetime import date, time
 
 import pytest
 
-from core.request import Request
+from core.request import STAR, TEXT, Line, Marker, Request, format_phone
 from core.summary import Window
 
 
@@ -15,7 +15,9 @@ def sample():
     first.info.update({"Location": "City Hall, McAllister @ Larkin & Polk", "Scene": "INT City Hall - SHOOT",
                        "Contact": "Pat Example", "Phone": "(415) 555-0100"})
     first.notes = "Crew parking on Grove"
-    first.lines = [[(37.7806, -122.4180), (37.7807, -122.4170)]]
+    first.lines = [Line([(37.7806, -122.4180), (37.7807, -122.4170)], "#1f77b4")]
+    first.markers = [Marker((37.7795, -122.4189), STAR), Marker((37.7801, -122.4175), TEXT, "INT City Hall")]
+    first.auto_name = False
     first.zones = {"123:1:4": {"Curb": "6 meters (6 general)", "Meters": "Metered", "Spaces": 8,
                                "Use": "Working vehicles"}}
     first.windows = {"123:1:4": [Window(date(2026, 11, 2), time(7), time(23, 59)), Window()]}
@@ -30,6 +32,8 @@ def test_round_trip_keeps_everything():
     assert back.info == req.info
     assert [loc.info for loc in back.locations] == [loc.info for loc in req.locations]
     assert back.locations[0].lines == req.locations[0].lines
+    assert back.locations[0].markers == req.locations[0].markers
+    assert back.locations[0].auto_name is False and back.locations[1].auto_name is True
     assert back.locations[0].zones == req.locations[0].zones
     assert back.locations[0].windows == req.locations[0].windows
     assert back.locations[0].notes == "Crew parking on Grove"
@@ -54,3 +58,20 @@ def test_rejects_other_files():
         Request.from_json('{"type": "FeatureCollection"}')
     with pytest.raises(ValueError):
         Request.from_json('{"format": "sf-film-parking-request", "version": 99}')
+
+
+def test_opens_version_1_files():
+    v1 = ('{"format": "sf-film-parking-request", "version": 1, "info": {}, "locations": ['
+          '{"id": "a1", "info": {"Location": "Grant @ Washington"}, "lines": [[[37.79, -122.40], [37.80, -122.41]]]}]}')
+    loc = Request.from_json(v1).locations[0]
+    assert loc.lines == [Line([(37.79, -122.40), (37.80, -122.41)])]
+    assert loc.lines[0].color == "#d62728"
+    assert loc.markers == [] and loc.auto_name is False
+
+
+def test_format_phone():
+    for typed in ("4159351007", "415-935-1007", "415.935.1007", "(415)935 1007", "1 415 935 1007"):
+        assert format_phone(typed) == "(415) 935-1007"
+    assert format_phone("415-935-1007 x12") == "415-935-1007 x12"
+    assert format_phone(" 911 ") == "911"
+    assert format_phone("") == ""

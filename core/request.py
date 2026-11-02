@@ -1,14 +1,23 @@
 """A whole parking request: shared shoot info plus one or more locations, each with its
-drawn curb lines, per-zone edits and time windows. Saved and reopened as JSON."""
+drawn curb lines, map markers (stars and text boxes), per-zone edits and time windows.
+Saved and reopened as JSON."""
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, time
 
 from core.summary import Window
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2  # 2: lines carry a color; locations have markers
+
+# Line colors to draw with. The first is the default; a blue line starts as "Picture".
+LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
+               "Orange": "#ff7f0e", "Purple": "#9467bd", "Black": "#222222"}
+DEFAULT_COLOR = LINE_COLORS["Red"]
+STAR, TEXT = "Star", "Text box"
+MARKER_KINDS = [STAR, TEXT]
 
 # Shared by every page of the request.
 REQUEST_FIELDS = ["Production", "Project", "Email", "Film SF permit #"]
@@ -20,14 +29,41 @@ def new_id():
     return uuid.uuid4().hex[:8]
 
 
+def format_phone(text):
+    """"4155550100" or "1-415-555-0100" -> "(415) 555-0100". Anything that isn't a 10-digit
+    US number (an extension, a short code) is left as typed."""
+    digits = re.sub(r"\D", "", text)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return text.strip()
+    return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+
+
+@dataclass
+class Line:
+    points: list  # [(lat, lon), ...] as drawn
+    color: str = DEFAULT_COLOR
+
+
+@dataclass
+class Marker:
+    point: tuple  # (lat, lon)
+    kind: str = STAR
+    text: str = ""
+
+
 @dataclass
 class Location:
     id: str = field(default_factory=new_id)
     info: dict = field(default_factory=lambda: {name: "" for name in LOCATION_FIELDS})
     notes: str = ""
-    lines: list = field(default_factory=list)   # [[(lat, lon), ...], ...] as drawn
-    zones: dict = field(default_factory=dict)   # zone id -> edited row (Curb, Meters, Spaces, Use)
+    lines: list = field(default_factory=list)    # [Line, ...]
+    markers: list = field(default_factory=list)  # [Marker, ...]
+    zones: dict = field(default_factory=dict)    # zone id -> edited row (Curb, Meters, Spaces, Use)
     windows: dict = field(default_factory=dict)  # zone id -> [Window, ...]
+    # The Location name is filled in from the drawn lines until the user types their own.
+    auto_name: bool = True
 
     @property
     def title(self):
@@ -60,7 +96,11 @@ class Request:
                 "id": loc.id,
                 "info": loc.info,
                 "notes": loc.notes,
-                "lines": [[[lat, lon] for lat, lon in line] for line in loc.lines],
+                "lines": [{"points": [[lat, lon] for lat, lon in line.points], "color": line.color}
+                          for line in loc.lines],
+                "markers": [{"point": list(m.point), "kind": m.kind, "text": m.text}
+                            for m in loc.markers],
+                "auto_name": loc.auto_name,
                 "zones": loc.zones,
                 "windows": {zid: [_window_out(w) for w in ws] for zid, ws in loc.windows.items()},
             } for loc in self.locations],
@@ -77,12 +117,22 @@ class Request:
             id=raw.get("id") or new_id(),
             info={name: raw.get("info", {}).get(name, "") for name in LOCATION_FIELDS},
             notes=raw.get("notes", ""),
-            lines=[[(lat, lon) for lat, lon in line] for line in raw.get("lines", [])],
+            lines=[_line_in(line) for line in raw.get("lines", [])],
+            markers=[Marker(tuple(m["point"]), m.get("kind", STAR), m.get("text", ""))
+                     for m in raw.get("markers", [])],
+            auto_name=raw.get("auto_name", not raw.get("info", {}).get("Location")),
             zones=raw.get("zones", {}),
             windows={zid: [_window_in(w) for w in ws] for zid, ws in raw.get("windows", {}).items()},
         ) for raw in data.get("locations", [])]
         info = {name: data.get("info", {}).get(name, "") for name in REQUEST_FIELDS}
         return cls(info=info, locations=locations or [Location()])
+
+
+def _line_in(raw):
+    """A saved line: version 1 stored bare point lists, version 2 adds a color."""
+    if isinstance(raw, dict):
+        return Line([(lat, lon) for lat, lon in raw["points"]], raw.get("color", DEFAULT_COLOR))
+    return Line([(lat, lon) for lat, lon in raw])
 
 
 def _window_out(w):
