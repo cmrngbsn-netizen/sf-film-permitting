@@ -23,7 +23,10 @@ python3 -m venv .venv
 ## Street data
 
 `data/segments.geojson` (street blocks with address ranges) and `data/nodes.json` (street names at each intersection)
-come from DataSF datasets `3psu-pn9h` and `gmfx-8h6i`. To rebuild them from the latest city data:
+come from DataSF datasets `3psu-pn9h` and `gmfx-8h6i`. `data/curbs.json` holds active on-street
+meters (by cap color) and color curbs (driveways, blue/white/yellow/green zones, ...) from
+SFMTA's parking map service, placed on their block and side. SFMTA updates meters weekly, so
+rebuild every few weeks to stay current. To rebuild everything from the latest city data:
 
 ```bash
 .venv/bin/python scripts/build_data.py --refresh

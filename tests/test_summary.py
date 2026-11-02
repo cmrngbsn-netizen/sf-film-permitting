@@ -33,3 +33,10 @@ def test_summary_totals_and_dedupes():
     assert s["Block #"] == ["800-890 Grant Ave", "700-790 Clay St"]
     assert s["Dates & hours"] == ["WE, 11/04/26 7:00 AM - 10:00 PM"]
     assert len(s["Street side"]) == 3
+    assert s["Curb notes"] == []
+
+
+def test_curb_notes():
+    z = ZoneRequest("800-890 Grant Ave", "west", 12, curb="12 meters (7 general, 5 yellow (commercial loading))")
+    assert summarize([z])["Curb notes"] == [
+        "800-890 Grant Ave, west side: 12 meters (7 general, 5 yellow (commercial loading))"]

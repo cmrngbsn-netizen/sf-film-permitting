@@ -2,7 +2,7 @@
 Film SF and SFMTA name them ("800-890 Grant Ave, west side, 160 ft, 8 spaces")."""
 
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from core.streets import M_PER_FT, pretty_street, to_latlon, to_xy
@@ -22,6 +22,9 @@ class CurbZone:
     between: str              # "Clay St and Washington St"
     length_ft: float
     points: list = field(repr=False)  # (lat, lon) of the drawn line on this block
+    cnn: int = field(default=0, repr=False)          # the block, for curb data lookups
+    side_sign: int = field(default=1, repr=False)    # +1 left of the block, -1 right
+    along_m: tuple = field(default=(0, 0), repr=False)  # stretch of the block covered
 
     @property
     def spaces(self):
@@ -60,11 +63,12 @@ class CurbZoner:
     def zones(self, line):
         """Curb zones for a drawn line [(lat, lon), ...], in drawing order."""
         samples = self._sample([to_xy(lat, lon) for lat, lon in line])
-        hits = []  # (segment, along, x, y, piece direction, closest centerline point)
+        hits = []  # (segment, along, x, y, piece direction, closest centerline point, side)
         for x, y in samples:
             seg, d, cx, cy, (dx, dy), along = self.index.nearest_piece(x, y)
             if d <= MAX_OFFSET_M:
-                hits.append((seg, along, x, y, dx, dy, cx, cy))
+                side = 1 if dx * (y - cy) - dy * (x - cx) >= 0 else -1
+                hits.append((seg, along, x, y, dx, dy, cx, cy, side))
 
         # Consecutive samples on the same block form a run; drop short runs (noise from
         # crossing an intersection), then join runs that end up next to each other.
@@ -87,7 +91,7 @@ class CurbZoner:
         seg = self.index.segments[run[0][0]]
         alongs = [h[1] for h in run]
         # Name the side by the street's main direction, from the middle sample.
-        _, _, x, y, dx, dy, cx, cy = run[len(run) // 2]
+        _, _, x, y, dx, dy, cx, cy, _ = run[len(run) // 2]
         if abs(dx) >= abs(dy):  # street runs mostly east-west
             side = "north" if y >= cy else "south"
         else:
@@ -103,6 +107,9 @@ class CurbZoner:
             between=between,
             length_ft=length_m / M_PER_FT,
             points=[to_latlon(h[2], h[3]) for h in run],
+            cnn=seg["cnn"],
+            side_sign=Counter(h[8] for h in run).most_common(1)[0][0],
+            along_m=(min(alongs), max(alongs)),
         )
 
     @staticmethod

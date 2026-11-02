@@ -19,6 +19,7 @@ class ZoneRequest:
     date: object = None   # datetime.date
     start: object = None  # datetime.time
     end: object = None    # datetime.time
+    curb: str = ""        # meters, driveways and color zones on this stretch
 
 
 def clock(t):
@@ -56,4 +57,5 @@ def summarize(zones):
         "Block #": unique(z.block for z in zones),
         "Street side": [street_side(z) for z in zones],
         "Dates & hours": unique(dates_and_hours(z) for z in zones),
+        "Curb notes": [f"{z.block}, {z.side} side: {z.curb}" for z in zones if z.curb],
     }

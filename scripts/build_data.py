@@ -5,14 +5,20 @@ Outputs:
   data/segments.geojson  one feature per street block (intersection to intersection),
                          with address ranges per side
   data/nodes.json        intersection node CNN -> street names meeting there
+  data/curbs.json        active meters and color curbs (driveways, loading zones, ...)
+                         placed on their block, side and position along the block
 """
 
 import json
+import math
 import sys
+import urllib.parse
 import urllib.request
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 DATA_DIR = ROOT / "data"
 CACHE_DIR = ROOT / "scripts" / ".cache"  # raw downloads, not committed
 
@@ -20,6 +26,16 @@ SOURCES = {
     "segments": "https://data.sf.gov/api/v3/views/3psu-pn9h/query.geojson?accessType=DOWNLOAD",
     "intersections": "https://data.sf.gov/api/v3/views/gmfx-8h6i/query.geojson?accessType=DOWNLOAD",
 }
+
+# SFMTA parking layers (ArcGIS). Meters are one point per space; color curbs are one
+# point per zone with its length in feet. Both are pulled fresh on every build.
+SFMTA = "https://services.sfmta.com/arcgis/rest/services/Parking/parking/MapServer"
+METERS_LAYER = 11
+CURBS_LAYER = 18
+# Active on-street meters only ("M" or "T", per SFMTA's notes on the layer).
+METERS_WHERE = "ON_OFFSTREET_TYPE='ON' AND ACTIVE_METER_FLAG IN ('M','T')"
+# A meter or curb point farther than this from any street centerline is skipped.
+CURB_MAX_OFFSET_M = 30
 
 # Values of the `layer` field kept as vehicle streets. Everything else is dropped:
 # FREEWAYS, PAPER*, PRIVATE*, PSEUDO, STREETS_PEDESTRI (pedestrian-only) and
@@ -111,6 +127,62 @@ def build_nodes(raw, segments):
     return nodes, used
 
 
+def fetch_arcgis(layer, where, fields):
+    """All features of an SFMTA layer in WGS84, fetched in pages."""
+    features, offset = [], 0
+    while True:
+        query = urllib.parse.urlencode({
+            "where": where, "outFields": fields, "outSR": 4326, "f": "json",
+            "resultOffset": offset, "resultRecordCount": 5000, "orderByFields": "OBJECTID",
+        })
+        with urllib.request.urlopen(f"{SFMTA}/{layer}/query?{query}") as res:
+            page = json.load(res)
+        if "error" in page:
+            raise RuntimeError(f"SFMTA layer {layer}: {page['error']}")
+        features += page["features"]
+        if not page.get("exceededTransferLimit"):
+            return features
+        offset += len(page["features"])
+
+
+def build_curbs():
+    """Block CNN -> [[side, along_m, kind, feet], ...] for meters and color curbs.
+    side is +1 for the left of the block (walking from f_node to t_node), -1 for the right."""
+    from core.streets import StreetIndex, to_xy
+
+    index = StreetIndex(DATA_DIR)
+    print("Downloading SFMTA meters ...")
+    meters = fetch_arcgis(METERS_LAYER, METERS_WHERE, "POST_ID,CAP_COLOR")
+    print("Downloading SFMTA color curbs ...")
+    curbs = fetch_arcgis(CURBS_LAYER, "1=1", "ZONE_TYPE,FEET")
+
+    points = [((f["geometry"]["y"], f["geometry"]["x"]), f"meter:{f['attributes']['CAP_COLOR']}", 0)
+              for f in meters if f.get("geometry")]
+    for f in curbs:
+        kind = (f["attributes"]["ZONE_TYPE"] or "").strip()
+        for lon, lat in (f.get("geometry") or {}).get("points", []):
+            if kind:
+                points.append(((lat, lon), f"curb:{kind}", f["attributes"]["FEET"] or 0))
+
+    by_block, skipped = {}, 0
+    for (lat, lon), kind, feet in points:
+        x, y = to_xy(lat, lon)
+        seg, d, cx, cy, (dx, dy), along = index.nearest_piece(x, y)
+        if d > CURB_MAX_OFFSET_M:
+            skipped += 1
+            continue
+        side = 1 if dx * (y - cy) - dy * (x - cx) >= 0 else -1
+        cnn = str(index.segments[seg]["cnn"])
+        by_block.setdefault(cnn, []).append([side, round(along, 1), kind, feet])
+
+    out = DATA_DIR / "curbs.json"
+    out.write_text(json.dumps({"built": date.today().isoformat(), "blocks": by_block},
+                              separators=(",", ":")))
+    print(f"Meters: {len(meters)}  Color curbs: {len(curbs)}  "
+          f"Placed: {len(points) - skipped}  Skipped (off street): {skipped}  "
+          f"-> {out.stat().st_size // 1024} KB")
+
+
 def main():
     refresh = "--refresh" in sys.argv
     raw_segments = download("segments", SOURCES["segments"], refresh)
@@ -132,6 +204,8 @@ def main():
     print(f"Nodes used:          {len(used)}")
     print(f"Nodes with names:    {len(nodes)}  -> {kb(node_file)}")
     print(f"Nodes without names: {len(used) - len(nodes)}")
+    print()
+    build_curbs()
 
 
 if __name__ == "__main__":

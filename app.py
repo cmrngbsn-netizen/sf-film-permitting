@@ -7,12 +7,14 @@ Run locally with: streamlit run app.py
 """
 
 from datetime import date
+from pathlib import Path
 
 import folium
 import streamlit as st
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 
+from core.curbdata import CurbData
 from core.curbs import CurbZoner
 from core.pdf import build_pdf, render_map
 from core.streets import StreetIndex
@@ -26,9 +28,30 @@ st.set_page_config(page_title="SF Film Parking Request", layout="wide")
 st.title("SF Film Parking Request")
 
 
+def code_version():
+    """Changes whenever the street code or data changes, so cached objects get rebuilt
+    after an update instead of mixing old objects with new code."""
+    root = Path(__file__).parent
+    files = [*root.glob("core/*.py"), *root.glob("data/*")]
+    return max(f.stat().st_mtime for f in files)
+
+
 @st.cache_resource
-def zoner():
+def _zoner(version):
     return CurbZoner(StreetIndex())
+
+
+@st.cache_resource
+def _curb_data(version):
+    return CurbData()
+
+
+def zoner():
+    return _zoner(code_version())
+
+
+def curb_data():
+    return _curb_data(code_version())
 
 
 @st.cache_data(show_spinner="Drawing the map for the PDF...")
@@ -106,22 +129,26 @@ with side_col:
 if zones:
     st.divider()
     st.subheader("Curb zones")
-    st.caption("One row per block. Spaces are estimated at 20 ft each; change them if you "
-               "know better. Set the use, meters, date and hours for each zone.")
+    st.caption(f"One row per block. **Curb**, **Meters** and **Spaces** are filled in from SFMTA "
+               f"meter and color-curb data (updated {curb_data().built}): one space per meter on "
+               f"metered curb, otherwise 20 ft per space minus driveways. Change anything you know "
+               f"better, then set the use, date and hours for each zone.")
 
+    infos = [curb_data().lookup(z) for z in zones]
     rows = [{
         "Zone": i,
         "Block": z.block,
         "Side": z.side,
         "Between": z.between,
         "Length (ft)": round(z.length_ft),
-        "Spaces": z.spaces,
+        "Curb": info.describe(),
+        "Meters": "Metered" if info.metered else "Non-metered",
+        "Spaces": info.suggested_spaces(z.length_ft),
         "Use": WORKING,
-        "Meters": "Not sure",
         "Date": None,
         "Start": None,
         "End": None,
-    } for i, z in enumerate(zones, start=1)]
+    } for i, (z, info) in enumerate(zip(zones, infos), start=1)]
 
     # New or changed lines get fresh rows instead of old edits.
     edited = st.data_editor(
@@ -129,6 +156,7 @@ if zones:
         use_container_width=True,
         disabled=["Zone", "Block", "Side", "Between", "Length (ft)"],
         column_config={
+            "Curb": st.column_config.TextColumn(width="large"),
             "Spaces": st.column_config.NumberColumn(min_value=1, step=1),
             "Use": st.column_config.SelectboxColumn(options=USES, required=True),
             "Meters": st.column_config.SelectboxColumn(options=METERS, required=True),
@@ -139,7 +167,8 @@ if zones:
     )
 
     requests = [ZoneRequest(z.block, z.side, int(r["Spaces"] or z.spaces), r["Use"], r["Meters"],
-                            r["Date"], r["Start"], r["End"]) for z, r in zip(zones, edited)]
+                            r["Date"], r["Start"], r["End"], r["Curb"] or "")
+                for z, r in zip(zones, edited)]
     drawn = tuple((tuple(z.points), USE_COLORS[r.use], str(r.spaces)) for z, r in zip(zones, requests))
     summary = summarize(requests)
 

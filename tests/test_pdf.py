@@ -11,6 +11,7 @@ SUMMARY = {
     "Block #": ["400-490 McAllister St"],
     "Street side": ["8 metered spaces on north side 400-490 McAllister St"],
     "Dates & hours": ["MO, 11/02/26 7:00 AM - 11:59 PM"],
+    "Curb notes": ["400-490 McAllister St, north side: 6 meters (6 general)"],
 }
 LEGEND = [("Working vehicles", (214, 39, 40)), ("Picture", (31, 119, 180))]
 
@@ -28,5 +29,6 @@ def test_pdf_builds_with_special_characters():
 
 
 def test_empty_fields():
-    empty = {"# of signs": "0 total spaces", "Block #": [], "Street side": [], "Dates & hours": []}
+    empty = {"# of signs": "0 total spaces", "Block #": [], "Street side": [], "Dates & hours": [],
+             "Curb notes": []}
     assert build_pdf(placeholder_png(), "", empty, LEGEND, "   ").startswith(b"%PDF")
