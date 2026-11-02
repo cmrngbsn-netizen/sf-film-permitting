@@ -1,4 +1,5 @@
-"""PDF export: a summary of the requested permit area with a map and the boundary list."""
+"""PDF export: one page laid out like a Film SF parking request, with a map of the
+curb zones and the request table."""
 
 import io
 from datetime import date
@@ -10,7 +11,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Image as PdfImage
-from reportlab.platypus import ListFlowable, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from staticmap import StaticMap
 from staticmap.staticmap import _lat_to_y, _lon_to_x
 
@@ -21,17 +22,17 @@ MAP_CREDIT = "Map data © OpenStreetMap contributors"
 MAX_ZOOM = 19  # highest zoom OpenStreetMap serves
 
 MAP_SIZE = (1400, 950)  # pixels; drawn at about 200 dpi on the page
-MAP_MARGIN = 150  # pixels kept clear around the area
-RED = (214, 39, 40)
+MAP_MARGIN = 150  # pixels kept clear around the zones
 
 
-def render_map(points):
-    """PNG bytes of the area over OpenStreetMap tiles, with numbered points.
-    points: [(lat, lon), ...] in boundary order."""
+def render_map(lines):
+    """PNG bytes of curb zones over OpenStreetMap tiles.
+    lines: [(points [(lat, lon), ...], (r, g, b), label), ...]"""
     m = StaticMap(*MAP_SIZE, url_template=TILE_URL, headers=TILE_HEADERS)
-    lats, lons = [p[0] for p in points], [p[1] for p in points]
+    every = [p for pts, _, _ in lines for p in pts]
+    lats, lons = [p[0] for p in every], [p[1] for p in every]
     center = [(min(lons) + max(lons)) / 2, (min(lats) + max(lats)) / 2]
-    # Closest zoom at which the whole area fits with a margin around it.
+    # Closest zoom at which every zone fits with a margin around it.
     zoom = MAX_ZOOM
     while zoom > 12:
         w = (_lon_to_x(max(lons), zoom) - _lon_to_x(min(lons), zoom)) * 256
@@ -41,15 +42,20 @@ def render_map(points):
         zoom -= 1
     base = m.render(zoom=zoom, center=center).convert("RGBA")
 
-    px = [(m._x_to_px(_lon_to_x(lon, zoom)), m._y_to_px(_lat_to_y(lat, zoom))) for lat, lon in points]
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    draw.polygon(px, fill=RED + (45,))
-    draw.line(px + [px[0]], fill=RED + (255,), width=6, joint="curve")
     font = ImageFont.load_default(size=26)
-    for i, (x, y) in enumerate(px, start=1):
-        draw.ellipse([x - 22, y - 22, x + 22, y + 22], fill=RED + (255,), outline="white", width=3)
-        draw.text((x, y), str(i), fill="white", font=font, anchor="mm")
+    for pts, rgb, label in lines:
+        px = [(m._x_to_px(_lon_to_x(lon, zoom)), m._y_to_px(_lat_to_y(lat, zoom))) for lat, lon in pts]
+        draw.line(px, fill=rgb + (255,), width=9, joint="curve")
+        for x, y in (px[0], px[-1]):
+            draw.ellipse([x - 9, y - 9, x + 9, y + 9], fill=rgb + (255,))
+        # Space count in a white box at the middle of the zone, like the Film SF slides.
+        x, y = px[len(px) // 2]
+        box = draw.textbbox((x, y), label, font=font, anchor="mm")
+        draw.rectangle([box[0] - 8, box[1] - 6, box[2] + 8, box[3] + 6],
+                       fill="white", outline=rgb + (255,), width=3)
+        draw.text((x, y), label, fill="black", font=font, anchor="mm")
     credit_font = ImageFont.load_default(size=20)
     box = draw.textbbox((MAP_SIZE[0] - 12, MAP_SIZE[1] - 10), MAP_CREDIT, font=credit_font, anchor="rd")
     draw.rectangle([box[0] - 8, box[1] - 6, MAP_SIZE[0], MAP_SIZE[1]], fill=(255, 255, 255, 220))
@@ -61,35 +67,51 @@ def render_map(points):
     return out.getvalue()
 
 
-def build_pdf(map_png, boundary, notes, created=None):
-    """PDF bytes. boundary: label text per point, in order; notes: free text."""
+def build_pdf(map_png, location, summary, legend, notes, created=None):
+    """PDF bytes.
+    summary: the dict from core.summary.summarize; legend: [(label, (r, g, b)), ...]."""
     created = created or date.today()
     styles = getSampleStyleSheet()
-    small = styles["BodyText"].clone("small", fontSize=8, leading=10, textColor=colors.grey)
+    body = styles["BodyText"]
+    small = body.clone("small", fontSize=8, leading=10, textColor=colors.grey)
+    label = body.clone("label", fontName="Helvetica-Bold")
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter, title="SF Film Permit Area",
+    doc = SimpleDocTemplate(buf, pagesize=letter, title="SF Film Parking Request",
                             leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-                            topMargin=0.6 * inch, bottomMargin=0.6 * inch)
+                            topMargin=0.5 * inch, bottomMargin=0.5 * inch)
     width = doc.width
     image = Image.open(io.BytesIO(map_png))
     height = width * image.height / image.width
 
+    def cell(value):
+        lines = value if isinstance(value, list) else [value]
+        return Paragraph("<br/>".join(escape(v) for v in lines) or "—", body)
+
+    rows = [[Paragraph("LOCATION:", label), cell(location)]]
+    rows += [[Paragraph(f"{k.upper()}:", label), cell(v)] for k, v in summary.items()]
+    table = Table(rows, colWidths=[1.4 * inch, width - 1.4 * inch])
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e8e8ec")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    key = "&nbsp;&nbsp;&nbsp;".join(
+        f'<font color="#{r:02x}{g:02x}{b:02x}">&#9632;</font> {escape(name)}' for name, (r, g, b) in legend)
+
     story = [
-        Paragraph("SF Film Permit Area", styles["Title"]),
-        Paragraph(f"Created {created:%B %-d, %Y}", styles["BodyText"]),
-        Paragraph("Beta planning aid, not an official filing. Requests still go through "
+        Paragraph("Parking Request", styles["Title"]),
+        Paragraph(f"Created {created:%B %-d, %Y}", body),
+        Paragraph("Planning aid, not an official filing. Requests still go through "
                   "Film SF and SFMTA.", small),
-        Spacer(1, 10),
-        PdfImage(io.BytesIO(map_png), width=width, height=height),
-        Spacer(1, 12),
-        Paragraph("Area boundary, in order", styles["Heading2"]),
-        ListFlowable([Paragraph(escape(text), styles["BodyText"]) for text in boundary],
-                     bulletType="1", leftIndent=18),
         Spacer(1, 8),
-        Paragraph("Notes", styles["Heading2"]),
-        Paragraph(escape(notes).replace("\n", "<br/>") if notes.strip() else "None.",
-                  styles["BodyText"]),
+        PdfImage(io.BytesIO(map_png), width=width, height=height),
+        Paragraph(key, small),
+        Spacer(1, 10),
+        table,
     ]
+    if notes.strip():
+        story += [Spacer(1, 8), Paragraph("Notes", styles["Heading3"]),
+                  Paragraph(escape(notes).replace("\n", "<br/>"), body)]
     doc.build(story)
     return buf.getvalue()

@@ -2,7 +2,8 @@
 static files into data/. Run with: python scripts/build_data.py [--refresh]
 
 Outputs:
-  data/segments.geojson  one feature per street block (intersection to intersection)
+  data/segments.geojson  one feature per street block (intersection to intersection),
+                         with address ranges per side
   data/nodes.json        intersection node CNN -> street names meeting there
 """
 
@@ -39,7 +40,7 @@ COORD_DECIMALS = 6
 
 
 def to_cnn(value):
-    """"26132000.0" -> 26132000"""
+    """"26132000.0" -> 26132000 (also used for address numbers)"""
     if value in (None, ""):
         return None
     return round(float(value))
@@ -76,6 +77,11 @@ def slim_segments(raw):
                 "st_type": p.get("st_type"),
                 "f_node_cnn": to_cnn(p.get("f_node_cnn")),
                 "t_node_cnn": to_cnn(p.get("t_node_cnn")),
+                # Address ranges on the left and right side (relative to f_node -> t_node).
+                "lf_fadd": to_cnn(p.get("lf_fadd")),
+                "lf_toadd": to_cnn(p.get("lf_toadd")),
+                "rt_fadd": to_cnn(p.get("rt_fadd")),
+                "rt_toadd": to_cnn(p.get("rt_toadd")),
             },
             "geometry": {
                 "type": "LineString",

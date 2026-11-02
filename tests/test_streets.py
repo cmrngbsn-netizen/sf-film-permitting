@@ -21,6 +21,7 @@ def test_pretty_street():
     assert pretty_street("18TH ST") == "18th St"
     assert pretty_street("VALENCIA ST") == "Valencia St"
     assert pretty_street("O'FARRELL ST") == "O'Farrell St"
+    assert pretty_street("MCALLISTER ST") == "McAllister St"
 
 
 @pytest.mark.parametrize("east, north, corner", [(8, 8, "NE"), (-8, 8, "NW"), (8, -8, "SE"), (-8, -8, "SW")])

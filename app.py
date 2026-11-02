@@ -1,7 +1,8 @@
 """SF Film Permit helper (beta).
 
-Draw the requested permit area on a map of San Francisco, review each corner point
-against the nearest cross streets, and add notes.
+Draw lines along the curbs you need for a shoot. Each line is split into one zone per
+block and named the way Film SF names them ("8 spaces on north side 400-490 McAllister St"),
+then exported as a one-page parking request PDF.
 Run locally with: streamlit run app.py
 """
 
@@ -12,27 +13,31 @@ import streamlit as st
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 
+from core.curbs import CurbZoner
 from core.pdf import build_pdf, render_map
 from core.streets import StreetIndex
+from core.summary import METERS, PICTURE, USES, WORKING, ZoneRequest, summarize
 
 SF_CENTER = [37.7749, -122.4194]
 SF_BOUNDS = [[37.70, -122.53], [37.84, -122.35]]  # keeps the map panned to the city
+USE_COLORS = {WORKING: (214, 39, 40), PICTURE: (31, 119, 180)}
 
-SNAP = "Snap to corner"
-KEEP = "Keep as drawn"
-
-st.set_page_config(page_title="SF Film Permit Area", layout="wide")
-st.title("SF Film Permit Area")
+st.set_page_config(page_title="SF Film Parking Request", layout="wide")
+st.title("SF Film Parking Request")
 
 
 @st.cache_resource
-def street_index():
-    return StreetIndex()
+def zoner():
+    return CurbZoner(StreetIndex())
 
 
 @st.cache_data(show_spinner="Drawing the map for the PDF...")
-def pdf_map(final):
-    return render_map(list(final))
+def pdf_map(lines):
+    return render_map([(list(pts), rgb, label) for pts, rgb, label in lines])
+
+
+def hex_color(rgb):
+    return "#%02x%02x%02x" % rgb
 
 
 def base_map(**kwargs):
@@ -43,11 +48,11 @@ def base_map(**kwargs):
 
 def drawing_map():
     m = base_map(location=SF_CENTER, zoom_start=14)
-    # Only the polygon tool: click to add corners, click the first corner to close.
+    # Only the line tool: click along the curb, click the last point again to finish.
     Draw(
         draw_options={
-            "polygon": {"allowIntersection": False, "showArea": False},
-            "polyline": False, "rectangle": False, "circle": False,
+            "polyline": {"shapeOptions": {"color": "#d62728", "weight": 5}},
+            "polygon": False, "rectangle": False, "circle": False,
             "marker": False, "circlemarker": False,
         },
         edit_options={"edit": True, "remove": True},
@@ -55,101 +60,106 @@ def drawing_map():
     return m
 
 
-def reviewed_map(drawn, final):
-    """Final area with numbered points; grey dots show where snapped points were drawn."""
+def zones_map(lines):
+    """Reviewed zones: one colored line per zone with its space count."""
     m = base_map()
-    folium.Polygon(final, color="#d62728", weight=3, fill=True, fill_opacity=0.15).add_to(m)
-    for i, (orig, new) in enumerate(zip(drawn, final), start=1):
-        if orig != new:
-            folium.PolyLine([orig, new], color="grey", weight=1, dash_array="4").add_to(m)
-            folium.CircleMarker(orig, radius=3, color="grey", fill=True).add_to(m)
-        folium.Marker(new, icon=folium.DivIcon(
-            icon_size=(22, 22), icon_anchor=(11, 11),
-            html=f'<div style="background:#d62728;color:white;border-radius:11px;width:22px;'
-                 f'height:22px;line-height:22px;text-align:center;font:bold 12px sans-serif">{i}</div>',
+    for pts, rgb, label in lines:
+        folium.PolyLine(pts, color=hex_color(rgb), weight=7, opacity=0.9).add_to(m)
+        folium.Marker(pts[len(pts) // 2], icon=folium.DivIcon(
+            icon_size=(30, 20), icon_anchor=(15, 10),
+            html=f'<div style="background:white;color:black;border:2px solid {hex_color(rgb)};'
+                 f'width:30px;text-align:center;font:bold 12px sans-serif">{label}</div>',
         )).add_to(m)
-    m.fit_bounds([[min(p[0] for p in final), min(p[1] for p in final)],
-                  [max(p[0] for p in final), max(p[1] for p in final)]], padding=(30, 30))
+    every = [p for pts, _, _ in lines for p in pts]
+    m.fit_bounds([[min(p[0] for p in every), min(p[1] for p in every)],
+                  [max(p[0] for p in every), max(p[1] for p in every)]], padding=(30, 30))
     return m
-
-
-def polygon_points(drawing):
-    """Corner points of a drawn polygon as (lat, lon), without the repeated closing point."""
-    ring = drawing["geometry"]["coordinates"][0]
-    return [(lat, lon) for lon, lat in ring[:-1]]
 
 
 map_col, side_col = st.columns([3, 2])
 
 with map_col:
-    st.caption("Click the pentagon tool on the left of the map, click each corner of your area, "
-               "then click the first corner again to close it.")
+    st.caption("Click the line tool on the left of the map, then click along the curb you need. "
+               "Click the last point again (or **Finish**) to end the line. Draw one line per "
+               "stretch of curb; a line can turn corners.")
     result = st_folium(drawing_map(), height=600, use_container_width=True,
                        returned_objects=["all_drawings"])
 
 drawings = (result or {}).get("all_drawings") or []
-polygons = [d for d in drawings if d.get("geometry", {}).get("type") == "Polygon"]
-points = polygon_points(polygons[-1]) if polygons else []
+lines = [[(lat, lon) for lon, lat in d["geometry"]["coordinates"]]
+         for d in drawings if d.get("geometry", {}).get("type") == "LineString"]
+zones = [z for line in lines for z in zoner().zones(line)]
 
 with side_col:
-    st.subheader("Requested area")
-    if not points:
-        st.write("No area drawn yet.")
+    st.text_input("Location", key="location",
+                  placeholder="e.g. City Hall, McAllister @ Larkin & Polk")
+    st.text_area("Notes", key="notes", height=120,
+                 placeholder="Anything the permit office should know")
+    if not lines:
+        st.write("No curb lines drawn yet.")
+    elif not zones:
+        st.warning("The line isn't close enough to a street. Draw it along the curb.")
     else:
-        if len(polygons) > 1:
-            st.warning("More than one area is drawn. Only the most recent one is used; "
-                       "delete the others with the trash tool.")
-        st.write(f"{len(points)} corner points. Review them below the map.")
+        st.write(f"{len(zones)} curb zone{'s' if len(zones) != 1 else ''} found. "
+                 "Review them below the map.")
 
-    st.subheader("Notes")
-    st.text_area("Anything the permit office should know about this area",
-                 key="notes", height=150)
-
-if points:
+if zones:
     st.divider()
-    st.subheader("Review points")
-    st.caption("Each point is matched to the nearest cross streets. Points near an intersection "
-               f"can snap to it; mid-block points stay where you drew them. Change the "
-               f"**Action** column to choose.")
+    st.subheader("Curb zones")
+    st.caption("One row per block. Spaces are estimated at 20 ft each; change them if you "
+               "know better. Set the use, meters, date and hours for each zone.")
 
-    labels = [street_index().label_point(lat, lon) for lat, lon in points]
     rows = [{
-        "Point": i,
-        "Location": lab.label,
-        "Distance to corner (ft)": str(round(lab.distance_ft)) if lab.kind == "corner" else "—",
-        "Action": SNAP if lab.kind == "corner" else KEEP,
-    } for i, lab in enumerate(labels, start=1)]
+        "Zone": i,
+        "Block": z.block,
+        "Side": z.side,
+        "Between": z.between,
+        "Length (ft)": round(z.length_ft),
+        "Spaces": z.spaces,
+        "Use": WORKING,
+        "Meters": "Not sure",
+        "Date": None,
+        "Start": None,
+        "End": None,
+    } for i, z in enumerate(zones, start=1)]
 
-    # A new or edited polygon gets fresh suggestions instead of old choices.
+    # New or changed lines get fresh rows instead of old edits.
     edited = st.data_editor(
-        rows, key=f"review-{hash(tuple(points))}", hide_index=True, use_container_width=True,
-        disabled=["Point", "Location", "Distance to corner (ft)"],
-        column_config={"Action": st.column_config.SelectboxColumn(options=[SNAP, KEEP], required=True)},
+        rows, key=f"zones-{hash(tuple(map(tuple, lines)))}", hide_index=True,
+        use_container_width=True,
+        disabled=["Zone", "Block", "Side", "Between", "Length (ft)"],
+        column_config={
+            "Spaces": st.column_config.NumberColumn(min_value=1, step=1),
+            "Use": st.column_config.SelectboxColumn(options=USES, required=True),
+            "Meters": st.column_config.SelectboxColumn(options=METERS, required=True),
+            "Date": st.column_config.DateColumn(format="ddd MM/DD/YY"),
+            "Start": st.column_config.TimeColumn(format="h:mm A", step=900),
+            "End": st.column_config.TimeColumn(format="h:mm A", step=900),
+        },
     )
 
-    final, listing = [], []
-    for lab, drawn, row in zip(labels, points, edited):
-        if row["Action"] == SNAP and lab.kind == "corner":
-            final.append((lab.snap_lat, lab.snap_lon))
-            listing.append(lab.label)
-        else:
-            final.append(drawn)
-            # A kept point near a corner is still described by that corner.
-            listing.append(lab.label if lab.kind == "mid-block" else f"Near {lab.label}")
-        if row["Action"] == SNAP and lab.kind == "mid-block":
-            st.warning(f"Point {row['Point']} is mid-block, so there is no corner to snap to; "
-                       "it stays where it was drawn.")
+    requests = [ZoneRequest(z.block, z.side, int(r["Spaces"] or z.spaces), r["Use"], r["Meters"],
+                            r["Date"], r["Start"], r["End"]) for z, r in zip(zones, edited)]
+    drawn = tuple((tuple(z.points), USE_COLORS[r.use], str(r.spaces)) for z, r in zip(zones, requests))
+    summary = summarize(requests)
 
     map_col2, list_col = st.columns([3, 2])
     with map_col2:
-        st_folium(reviewed_map(points, final), height=450, use_container_width=True,
+        st_folium(zones_map(drawn), height=450, use_container_width=True,
                   returned_objects=[], key="reviewed")
+        st.caption(f":red[■] {WORKING} · :blue[■] {PICTURE}")
     with list_col:
-        st.markdown("**Area boundary, in order**")
-        st.markdown("\n".join(f"{i}. {text}" for i, text in enumerate(listing, start=1)))
+        st.markdown(f"**Location:** {st.session_state.get('location') or '—'}")
+        for field, value in summary.items():
+            if isinstance(value, list):
+                st.markdown(f"**{field}:**" + "".join(f"\n- {v}" for v in value) if value
+                            else f"**{field}:** —")
+            else:
+                st.markdown(f"**{field}:** {value}")
 
         st.download_button(
             "Download PDF", type="primary", mime="application/pdf",
-            file_name=f"sf-permit-area-{date.today():%Y-%m-%d}.pdf",
-            data=build_pdf(pdf_map(tuple(final)), listing, st.session_state.get("notes", "")),
+            file_name=f"sf-parking-request-{date.today():%Y-%m-%d}.pdf",
+            data=build_pdf(pdf_map(drawn), st.session_state.get("location", ""), summary,
+                           list(USE_COLORS.items()), st.session_state.get("notes", "")),
         )

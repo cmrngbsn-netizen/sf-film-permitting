@@ -42,6 +42,8 @@ def pretty_street(name):
     for w in name.split():
         if re.fullmatch(r"\d+(ST|ND|RD|TH)", w):
             words.append(w.lower())
+        elif w.startswith("MC") and len(w) > 2:
+            words.append("Mc" + w[2:].capitalize())  # MCALLISTER -> McAllister
         else:
             words.append("'".join(part.capitalize() for part in w.split("'")))
     return " ".join(words)
@@ -87,16 +89,20 @@ class StreetIndex:
 
         # Every straight piece of every block, flattened for vectorized distance math.
         self.segments = [f["properties"] for f in segments]
-        starts, stops, owner = [], [], []
+        starts, stops, owner, offset = [], [], [], []
         for i, f in enumerate(segments):
             pts = [to_xy(lat, lon) for lon, lat in f["geometry"]["coordinates"]]
+            along = 0.0
             for a, b in zip(pts, pts[1:]):
                 starts.append(a)
                 stops.append(b)
                 owner.append(i)
+                offset.append(along)  # distance from the block's start to this piece
+                along += math.dist(a, b)
         self.piece_a = np.array(starts)
         self.piece_b = np.array(stops)
         self.piece_owner = np.array(owner)
+        self.piece_offset = np.array(offset)
 
     def nearest_intersection(self, lat, lon):
         """(cnn, distance_m, x, y) of the closest real intersection."""
@@ -105,10 +111,10 @@ class StreetIndex:
         i = int(d.argmin())
         return self.int_cnns[i], float(d[i]), *self.int_xy[i]
 
-    def nearest_block(self, lat, lon):
-        """(segment properties, distance_m, x, y of the closest point on the centerline,
-        direction of the piece it lies on)."""
-        p = np.array(to_xy(lat, lon))
+    def nearest_piece(self, x, y):
+        """Closest centerline point to (x, y) in meters: (segment index, distance_m,
+        closest x, closest y, direction of the piece, distance along the block)."""
+        p = np.array((x, y))
         ab = self.piece_b - self.piece_a
         length2 = (ab ** 2).sum(axis=1)
         length2[length2 == 0] = 1e-9
@@ -116,8 +122,14 @@ class StreetIndex:
         closest = self.piece_a + ab * t[:, None]
         d = np.hypot(*(closest - p).T)
         i = int(d.argmin())
-        seg = self.segments[self.piece_owner[i]]
-        return seg, float(d[i]), *closest[i], ab[i]
+        along = self.piece_offset[i] + t[i] * math.sqrt(length2[i])
+        return int(self.piece_owner[i]), float(d[i]), *closest[i], ab[i], float(along)
+
+    def nearest_block(self, lat, lon):
+        """(segment properties, distance_m, x, y of the closest point on the centerline,
+        direction of the piece it lies on)."""
+        seg, d, cx, cy, direction, _ = self.nearest_piece(*to_xy(lat, lon))
+        return self.segments[seg], d, cx, cy, direction
 
     def cross_streets(self, node_cnn, own_street):
         """Names at a block's end node other than the block's own street."""
