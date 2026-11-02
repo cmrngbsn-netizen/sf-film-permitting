@@ -7,7 +7,7 @@ Run locally with: streamlit run app.py
 """
 
 import sys
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
 
 import folium
@@ -34,7 +34,8 @@ from core.curbdata import CurbData  # noqa: E402
 from core.curbs import CurbZoner  # noqa: E402
 from core.pdf import build_pdf, render_map  # noqa: E402
 from core.streets import StreetIndex  # noqa: E402
-from core.summary import METERS, PICTURE, USES, WORKING, ZoneRequest, summarize  # noqa: E402
+from core.summary import (METERS, PICTURE, SHOOT_FIELDS, USES, WORKING, Window,  # noqa: E402
+                          ZoneRequest, summarize)
 
 SF_CENTER = [37.7749, -122.4194]
 SF_BOUNDS = [[37.70, -122.53], [37.84, -122.35]]  # keeps the map panned to the city
@@ -108,6 +109,36 @@ def zones_map(lines):
     return m
 
 
+def as_date(v):
+    """A table cell as a date: the editor can hand back dates, timestamps or ISO text."""
+    if v is None or v == "" or v != v:  # v != v catches NaN/NaT
+        return None
+    if isinstance(v, str):
+        return datetime.fromisoformat(v).date()
+    return v.date() if isinstance(v, datetime) or hasattr(v, "to_pydatetime") else v
+
+
+def as_time(v):
+    """A table cell as a time of day, from a time or "HH:MM[:SS]" text."""
+    if v is None or v == "" or v != v:
+        return None
+    return time.fromisoformat(v) if isinstance(v, str) else v
+
+
+def zone_id(z):
+    """Stable name for a zone, so edits survive drawing more lines."""
+    return f"{z.cnn}:{z.side_sign}:{round(z.along_m[0] / 5)}"
+
+
+def snapshot(key, build):
+    """The editor's starting rows, fixed while its key stays the same. Streamlit applies a
+    data editor's edits to the rows it was first given, so those rows must not change."""
+    store = st.session_state.setdefault("snapshots", {})
+    if key not in store:
+        store[key] = build()
+    return store[key]
+
+
 map_col, side_col = st.columns([3, 2])
 
 with map_col:
@@ -123,9 +154,12 @@ lines = [[(lat, lon) for lon, lat in d["geometry"]["coordinates"]]
 zones = [z for line in lines for z in zoner().zones(line)]
 
 with side_col:
+    with st.expander("Shoot info", expanded=True):
+        for name in SHOOT_FIELDS:
+            st.text_input(name, key=f"shoot_{name}")
     st.text_input("Location", key="location",
                   placeholder="e.g. City Hall, McAllister @ Larkin & Polk")
-    st.text_area("Notes", key="notes", height=120,
+    st.text_area("Notes", key="notes", height=100,
                  placeholder="Anything the permit office should know")
     if not lines:
         st.write("No curb lines drawn yet.")
@@ -136,32 +170,40 @@ with side_col:
                  "Review them below the map.")
 
 if zones:
+    ids = [zone_id(z) for z in zones]
+    labels = [f"{i} · {z.block} ({z.side})" for i, z in enumerate(zones, start=1)]
+    zone_edits = st.session_state.setdefault("zone_edits", {})   # zone id -> edited row
+    zone_windows = st.session_state.setdefault("zone_windows", {})  # zone id -> [Window]
+    zones_key = str(hash(tuple(ids)))
+
     st.divider()
     st.subheader("Curb zones")
     st.caption(f"One row per block. **Curb**, **Meters** and **Spaces** are filled in from SFMTA "
                f"meter and color-curb data (updated {curb_data().built}): one space per meter on "
                f"metered curb, otherwise 20 ft per space minus driveways. Change anything you know "
-               f"better, then set the use, date and hours for each zone.")
+               f"better.")
 
-    infos = [curb_data().lookup(z) for z in zones]
-    rows = [{
-        "Zone": i,
-        "Block": z.block,
-        "Side": z.side,
-        "Between": z.between,
-        "Length (ft)": round(z.length_ft),
-        "Curb": info.describe(),
-        "Meters": "Metered" if info.metered else "Non-metered",
-        "Spaces": info.suggested_spaces(z.length_ft),
-        "Use": WORKING,
-        "Date": None,
-        "Start": None,
-        "End": None,
-    } for i, (z, info) in enumerate(zip(zones, infos), start=1)]
+    def zone_rows():
+        rows = []
+        for i, (z, zid) in enumerate(zip(zones, ids), start=1):
+            info = curb_data().lookup(z)
+            row = {
+                "Zone": i,
+                "Block": z.block,
+                "Side": z.side,
+                "Between": z.between,
+                "Length (ft)": round(z.length_ft),
+                "Curb": info.describe(),
+                "Meters": "Metered" if info.metered else "Non-metered",
+                "Spaces": info.suggested_spaces(z.length_ft),
+                "Use": WORKING,
+            }
+            row.update(zone_edits.get(zid, {}))  # earlier edits to this zone win
+            rows.append(row)
+        return rows
 
-    # New or changed lines get fresh rows instead of old edits.
     edited = st.data_editor(
-        rows, key=f"zones-{hash(tuple(map(tuple, lines)))}", hide_index=True,
+        snapshot(f"zones-{zones_key}", zone_rows), key=f"zones-{zones_key}", hide_index=True,
         use_container_width=True,
         disabled=["Zone", "Block", "Side", "Between", "Length (ft)"],
         column_config={
@@ -169,35 +211,69 @@ if zones:
             "Spaces": st.column_config.NumberColumn(min_value=1, step=1),
             "Use": st.column_config.SelectboxColumn(options=USES, required=True),
             "Meters": st.column_config.SelectboxColumn(options=METERS, required=True),
+        },
+    )
+    for zid, row in zip(ids, edited):
+        zone_edits[zid] = {k: row[k] for k in ("Curb", "Meters", "Spaces", "Use")}
+
+    st.subheader("Dates & hours")
+    st.caption("One row per zone to start. To book a zone for more than one day or time window, "
+               "add a row at the bottom of the table and pick its zone. An end time earlier than "
+               "the start means the next day.")
+
+    def schedule_rows():
+        rows = []
+        for label, zid in zip(labels, ids):
+            for w in zone_windows.get(zid) or [Window()]:
+                rows.append({"Zone": label, "Date": w.date, "Start": w.start, "End": w.end})
+        return rows
+
+    schedule = st.data_editor(
+        snapshot(f"schedule-{zones_key}", schedule_rows), key=f"schedule-{zones_key}",
+        hide_index=True, use_container_width=True, num_rows="dynamic",
+        column_config={
+            "Zone": st.column_config.SelectboxColumn(options=labels, required=True, width="large"),
             "Date": st.column_config.DateColumn(format="ddd MM/DD/YY"),
             "Start": st.column_config.TimeColumn(format="h:mm A", step=900),
             "End": st.column_config.TimeColumn(format="h:mm A", step=900),
         },
     )
+    for zid in ids:
+        zone_windows[zid] = []
+    for row in schedule:
+        if row.get("Zone") in labels:
+            zid = ids[labels.index(row["Zone"])]
+            zone_windows[zid].append(Window(as_date(row.get("Date")), as_time(row.get("Start")),
+                                            as_time(row.get("End"))))
 
-    requests = [ZoneRequest(z.block, z.side, int(r["Spaces"] or z.spaces), r["Use"], r["Meters"],
-                            r["Date"], r["Start"], r["End"], r["Curb"] or "")
-                for z, r in zip(zones, edited)]
+    requests = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"],
+                            zone_windows[zid], r["Curb"] or "")
+                for z, zid, r in zip(zones, ids, edited)]
     drawn = tuple((tuple(z.points), USE_COLORS[r.use], str(r.spaces)) for z, r in zip(zones, requests))
-    summary = summarize(requests)
+    shoot = {name: st.session_state.get(f"shoot_{name}", "").strip() for name in SHOOT_FIELDS}
+    project = shoot.pop("Project")
+    fields = {**shoot, "Location": st.session_state.get("location", "").strip(), **summarize(requests)}
 
+    st.divider()
     map_col2, list_col = st.columns([3, 2])
     with map_col2:
         st_folium(zones_map(drawn), height=450, use_container_width=True,
                   returned_objects=[], key="reviewed")
         st.caption(f":red[■] {WORKING} · :blue[■] {PICTURE}")
     with list_col:
-        st.markdown(f"**Location:** {st.session_state.get('location') or '—'}")
-        for field, value in summary.items():
+        if project:
+            st.markdown(f"#### {project}")
+        for name, value in fields.items():
+            if not value:
+                continue
             if isinstance(value, list):
-                st.markdown(f"**{field}:**" + "".join(f"\n- {v}" for v in value) if value
-                            else f"**{field}:** —")
+                st.markdown(f"**{name}:**" + "".join(f"\n- {v}" for v in value))
             else:
-                st.markdown(f"**{field}:** {value}")
+                st.markdown(f"**{name}:** {value}")
 
         st.download_button(
             "Download PDF", type="primary", mime="application/pdf",
             file_name=f"sf-parking-request-{date.today():%Y-%m-%d}.pdf",
-            data=build_pdf(pdf_map(drawn), st.session_state.get("location", ""), summary,
-                           list(USE_COLORS.items()), st.session_state.get("notes", "")),
+            data=build_pdf(pdf_map(drawn), fields, list(USE_COLORS.items()),
+                           st.session_state.get("notes", ""), project=project),
         )

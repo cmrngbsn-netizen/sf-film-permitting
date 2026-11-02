@@ -23,6 +23,7 @@ MAX_ZOOM = 19  # highest zoom OpenStreetMap serves
 
 MAP_SIZE = (1400, 950)  # pixels; drawn at about 200 dpi on the page
 MAP_MARGIN = 150  # pixels kept clear around the zones
+MAX_MAP_HEIGHT_IN = 4.0  # on the page
 
 
 def render_map(lines):
@@ -67,9 +68,10 @@ def render_map(lines):
     return out.getvalue()
 
 
-def build_pdf(map_png, location, summary, legend, notes, created=None):
+def build_pdf(map_png, fields, legend, notes, project="", created=None):
     """PDF bytes.
-    summary: the dict from core.summary.summarize; legend: [(label, (r, g, b)), ...]."""
+    fields: {label: text or [lines]} in table order (shoot info, location, then the
+    core.summary fields); empty values are left out. legend: [(label, (r, g, b)), ...]."""
     created = created or date.today()
     styles = getSampleStyleSheet()
     body = styles["BodyText"]
@@ -82,34 +84,38 @@ def build_pdf(map_png, location, summary, legend, notes, created=None):
                             topMargin=0.5 * inch, bottomMargin=0.5 * inch)
     width = doc.width
     image = Image.open(io.BytesIO(map_png))
-    height = width * image.height / image.width
+    # Shrink the map (keeping its shape) so the request table and notes fit on the page.
+    map_h = min(width * image.height / image.width, MAX_MAP_HEIGHT_IN * inch)
+    map_w = map_h * image.width / image.height
 
     def cell(value):
         lines = value if isinstance(value, list) else [value]
-        return Paragraph("<br/>".join(escape(v) for v in lines) or "—", body)
+        return Paragraph("<br/>".join(escape(v) for v in lines), body)
 
-    rows = [[Paragraph("LOCATION:", label), cell(location)]]
-    rows += [[Paragraph(f"{k.upper()}:", label), cell(v)] for k, v in summary.items()]
-    table = Table(rows, colWidths=[1.4 * inch, width - 1.4 * inch])
-    table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e8e8ec")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
+    rows = [[Paragraph(f"{k.upper()}:", label), cell(v)] for k, v in fields.items() if v]
     key = "&nbsp;&nbsp;&nbsp;".join(
         f'<font color="#{r:02x}{g:02x}{b:02x}">&#9632;</font> {escape(name)}' for name, (r, g, b) in legend)
 
-    story = [
-        Paragraph("Parking Request", styles["Title"]),
+    story = [Paragraph("Parking Request", styles["Title"])]
+    if project:
+        story.append(Paragraph(escape(project), styles["Heading2"]))
+    story += [
         Paragraph(f"Created {created:%B %-d, %Y}", body),
         Paragraph("Planning aid, not an official filing. Requests still go through "
                   "Film SF and SFMTA.", small),
         Spacer(1, 8),
-        PdfImage(io.BytesIO(map_png), width=width, height=height),
+        PdfImage(io.BytesIO(map_png), width=map_w, height=map_h),
         Paragraph(key, small),
         Spacer(1, 10),
-        table,
     ]
+    if rows:
+        table = Table(rows, colWidths=[1.5 * inch, width - 1.5 * inch])
+        table.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e8e8ec")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(table)
     if notes.strip():
         story += [Spacer(1, 8), Paragraph("Notes", styles["Heading3"]),
                   Paragraph(escape(notes).replace("\n", "<br/>"), body)]
