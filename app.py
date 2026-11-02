@@ -279,7 +279,7 @@ req = st.session_state.request
 gen = st.session_state.gen
 project = req.info["Project"]
 
-STEPS = ["1 · Shoot info", "2 · Locations & curbs", "3 · Review & PDF"]
+STEPS = ["1 · Start", "2 · Locations & curbs", "3 · Review & PDF"]
 
 
 def go(step):
@@ -388,6 +388,7 @@ def add_planned(planned, text):
             loc_.dates = schedules[0]
         else:
             loc_.windows.update(zone_times)
+    go(1)  # show the imported curbs on the map
     # Start every widget fresh from the request, as when a file is opened.
     st.session_state.current = first.id
     st.session_state.gen += 1
@@ -425,14 +426,47 @@ def csv_import():
             st.rerun()
 
 
-def shoot_info_step():
-    st.subheader("Shoot info")
-    st.caption("Shared by every page of the request.")
-    left, right = st.columns(2)
-    for i, name in enumerate(REQUEST_FIELDS):
-        with (left if i % 2 == 0 else right):
-            bound_text(name, req.info, name, f"g{gen}-req-{name}")
-    st.button("Next: locations and curbs", type="primary", on_click=go, args=(1,))
+SAMPLE_PAGE = Path(__file__).parent / "static" / "sample-page.jpg"  # made-up shoot, City Hall
+HOW_IT_WORKS = [
+    (":material/route:", "Draw your curbs",
+     "Click along the curbs you need. Lines can turn corners and run several blocks; each block "
+     "becomes a zone named the way Film SF does, with meters and spaces from city data."),
+    (":material/calendar_month:", "Set dates and hours",
+     "Once for each location, or for a single zone when it differs. Add stars, text boxes and "
+     "arrows to point things out."),
+    (":material/picture_as_pdf:", "Download the PDF",
+     "One page per location, laid out like the requests Film SF already gets. Save the request "
+     "to pick it up again later."),
+]
+
+
+def start_step():
+    intro, sample = st.columns([3, 2], gap="large")
+    with intro:
+        st.title("Plan your shoot's street parking")
+        st.markdown("Map the curbs your shoot needs in San Francisco and get a parking request "
+                    "PDF ready to send to Film SF.")
+        for icon, title, text in HOW_IT_WORKS:
+            st.markdown(f"#### {icon} {title}")
+            st.caption(text)
+    with sample:
+        st.image(str(SAMPLE_PAGE), caption="A finished page (made-up shoot)", use_container_width=True)
+
+    with st.container(border=True):
+        st.markdown("**Shoot info**")
+        st.caption("Goes on every page of the request. Fill it in now or come back to it any time.")
+        left, right = st.columns(2)
+        for i, name in enumerate(REQUEST_FIELDS):
+            with (left if i % 2 == 0 else right):
+                bound_text(name, req.info, name, f"g{gen}-req-{name}")
+        start, opener, importer, _ = st.columns([1.2, 1.2, 1.2, 2])
+        start.button("Start mapping curbs", type="primary", icon=":material/arrow_forward:",
+                     on_click=go, args=(1,), use_container_width=True)
+        with opener.popover("Open a saved request", icon=":material/folder_open:", use_container_width=True):
+            st.file_uploader("Saved request (.json)", type="json", key=f"g{gen}-open-start",
+                             on_change=open_request, args=(f"g{gen}-open-start",))
+        if importer.button("Import curbs from CSV", type="tertiary", icon=":material/upload_file:"):
+            csv_import()
 
 
 def locations_step():
@@ -623,4 +657,4 @@ def review_step():
         st.image(image, caption=f"Page {n} · {loc_.title}", use_container_width=True)
 
 
-[shoot_info_step, locations_step, review_step][st.session_state.step]()
+[start_step, locations_step, review_step][st.session_state.step]()

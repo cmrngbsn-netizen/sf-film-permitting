@@ -3,7 +3,8 @@
 Plan the street parking a film shoot in San Francisco needs, and export it as a parking
 request PDF in the format Film SF expects, with one page per location.
 
-1. **Shoot info**: production, project, email and permit number, shared by every page.
+1. **Start**: what the tool does, a sample page, and the shoot info (production, project,
+   email and permit number) shared by every page.
 2. **Locations & curbs**: draw lines along the curbs you need (or import them from CSV
    under *Add location*). Each line is split into one zone per block and named the way
    Film SF does ("8 metered spaces on north side 400-490 McAllister St"). Set the
@@ -46,6 +47,8 @@ python3 -m venv .venv
   sets the space count on unmetered curb because it accounts for every driveway; SFMTA's
   color curb data only has driveways painted red.
 - `static/intersections.json` is the intersection list the map's search uses.
+- `static/sample-page.jpg` is the example page on the start screen, made in the app from a
+  made-up shoot (the CSV import example plus invented contact details).
 
 SFMTA updates meters weekly, so rebuild every few weeks to stay current:
 
