@@ -79,9 +79,11 @@ def test_opens_version_1_files():
 def test_format_phone():
     for typed in ("4159351007", "415-935-1007", "415.935.1007", "(415)935 1007", "1 415 935 1007"):
         assert format_phone(typed) == "(415) 935-1007"
-    assert format_phone("415-935-1007 x12") == "415-935-1007 x12"
-    assert format_phone(" 911 ") == "911"
-    assert format_phone("") == ""
+    # Digits only, formatted as far as they go, the way the field formats while typing.
+    assert format_phone("415-935-1007 x12") == "(415) 935-1007"
+    assert format_phone("415") == "(415"
+    assert format_phone("41593") == "(415) 93"
+    assert format_phone("call me") == ""
 
 
 def test_opens_version_2_scene_field():

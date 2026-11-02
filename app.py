@@ -17,6 +17,7 @@ import folium
 import pandas as pd
 import pypdfium2
 import streamlit as st
+import streamlit.components.v1 as components
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 
@@ -36,7 +37,7 @@ if getattr(sys, "_sf_core_version", None) != code_version():
     sys._sf_core_version = code_version()
 
 from core.basemaps import OSM  # noqa: E402
-from core.curbdata import CurbData  # noqa: E402
+from core.curbdata import NOTHING_ON_RECORD, CurbData  # noqa: E402
 from core.bulk import EXAMPLE as CSV_EXAMPLE, StreetRoutes, plan  # noqa: E402
 from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
 from core.map_tools import MapTools  # noqa: E402
@@ -125,7 +126,8 @@ def fit(m, points):
 def drawing_map(lines, arrows, markers):
     """The map to draw on, starting with a location's saved lines, arrows and markers, which
     stay editable. Its tools are in a panel beside it (core.map_tools)."""
-    m = base_map(location=SF_CENTER, zoom_start=14, zoom_control=False)
+    # Quarter-step zoom, for the zoom slider beside the map.
+    m = base_map(location=SF_CENTER, zoom_start=14, zoom_control=False, zoom_snap=0.25, zoom_delta=0.5)
     saved = folium.FeatureGroup(name="Drawing").add_to(m)
     # Order matters: core.map_tools matches these to their saved details in this order.
     for line in lines:
@@ -233,7 +235,7 @@ def location_page(req, loc):
     if not zones:
         return None
     asks = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"],
-                        loc.windows_for(zid), r["Curb"] or "")
+                        loc.windows_for(zid), "" if r["Curb"] == NOTHING_ON_RECORD else r["Curb"] or "")
             for z, zid, r in zip(zones, ids, rows)]
     drawn = tuple((tuple(z.points), c, str(a.spaces)) for z, c, a in zip(zones, colors, asks))
     markers = tuple((m.kind, tuple(m.point), m.text, m.size, m.color) for m in loc.markers
@@ -312,6 +314,8 @@ def open_request(key):
 # Top bar: name, steps, open and save.
 st.markdown("""<style>
 [data-testid="stMainBlockContainer"], .block-container {padding-top: 2.2rem; padding-bottom: 2rem}
+[data-testid="stHeaderActionElements"] {display: none}  /* headings' link icons */
+[data-testid="InputInstructions"] {display: none}  /* "Press Enter to apply": fields save on leaving them */
 </style>""", unsafe_allow_html=True)
 brand, steps_col, file_col = st.columns([3, 5, 2], vertical_alignment="center")
 with brand:
@@ -426,6 +430,7 @@ def csv_import():
             st.rerun()
 
 
+EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 SAMPLE_PAGE = Path(__file__).parent / "static" / "sample-page.jpg"  # made-up shoot, City Hall
 HOW_IT_WORKS = [
     (":material/route:", "Draw your curbs",
@@ -450,7 +455,7 @@ def start_step():
             st.markdown(f"#### {icon} {title}")
             st.caption(text)
     with sample:
-        st.image(str(SAMPLE_PAGE), caption="A finished page (made-up shoot)", use_container_width=True)
+        st.image(str(SAMPLE_PAGE), caption="Example request", use_container_width=True)
 
     with st.container(border=True):
         st.markdown("**Shoot info**")
@@ -458,7 +463,10 @@ def start_step():
         left, right = st.columns(2)
         for i, name in enumerate(REQUEST_FIELDS):
             with (left if i % 2 == 0 else right):
-                bound_text(name, req.info, name, f"g{gen}-req-{name}")
+                bound_text(name, req.info, name, f"g{gen}-req-{name}",
+                           placeholder="name@company.com" if name == "Email" else None)
+                if name == "Email" and req.info["Email"] and not EMAIL.fullmatch(req.info["Email"]):
+                    st.caption(":red[That doesn't look like an email address. Use the form `name@company.com`.]")
         start, opener, importer, _ = st.columns([1.2, 1.2, 1.2, 2])
         start.button("Start mapping curbs", type="primary", icon=":material/arrow_forward:",
                      on_click=go, args=(1,), use_container_width=True)
@@ -580,10 +588,17 @@ def locations_step():
         labels = [f"{i} · {z.block} ({z.side})" for i, z in enumerate(zones, start=1)]
         zones_key = f"g{gen}-{loc.id}-{hash(tuple(ids))}"
 
-        st.subheader("Curb zones", help=f"One row per block. Curb, Meters and Spaces come from SFMTA "
-                     f"(meters and color curbs updated {curb_data().built}). Metered curb: one space "
-                     f"per meter. Unmetered curb: SFMTA's parking census, which counted legal spaces "
-                     f"around every driveway (2008-2014). Change anything you know better.")
+        heading, toggle, sources = st.columns([6, 1.4, 1], vertical_alignment="center")
+        heading.subheader("Curb zones")
+        curb_details = toggle.toggle("Curb details", key="curb_details",
+                                     on_change=lambda: st.session_state.update(snapshots={}),
+                                     help="Show the meters and color curbs (blue, white, yellow zones, "
+                                          "red-curb driveways) on each block.")
+        with sources.popover("Sources", use_container_width=True):
+            st.markdown(f"- **Meters and color curbs:** SFMTA, updated {curb_data().built}\n"
+                        "- **Spaces on unmetered curb:** SFMTA parking census (2008-2014)\n"
+                        "- **Streets and addresses:** DataSF\n\n"
+                        "Metered curb counts one space per car meter. Change any value you know better.")
 
         def zone_rows():
             return [{"Zone": i, "Block": z.block, "Side": z.side, "Between": z.between,
@@ -591,11 +606,11 @@ def locations_step():
                     for i, (z, zid, row) in enumerate(zip(zones, ids, base_rows), start=1)]
 
         edited = st.data_editor(
-            snapshot(f"zones-{zones_key}", zone_rows), key=f"zones-{zones_key}", hide_index=True,
-            use_container_width=True,
-            # What gets edited first; the long reference text from the city last.
-            column_order=["Zone", "Block", "Side", "Spaces", "Use", "Own times", "Meters", "Curb",
-                          "Between", "Length (ft)"],
+            snapshot(f"zones-{zones_key}-{curb_details}", zone_rows), key=f"zones-{zones_key}-{curb_details}",
+            hide_index=True, use_container_width=True,
+            # What gets edited first; the city's curb details only when asked for.
+            column_order=["Zone", "Block", "Side", "Spaces", "Use", "Own times", "Meters",
+                          *(["Curb"] if curb_details else []), "Between", "Length (ft)"],
             disabled=["Zone", "Block", "Side", "Between", "Length (ft)"],
             column_config={
                 "Curb": st.column_config.TextColumn(width="large"),
@@ -658,3 +673,36 @@ def review_step():
 
 
 [start_step, locations_step, review_step][st.session_state.step]()
+
+# Formats the Phone field while it's typed: digits only, "(415) 555-0100" (as format_phone does
+# when the field is saved). Streamlit text inputs can't do this, so a script in a hidden frame
+# watches the page for Phone fields.
+PHONE_JS = """<script>
+const page = window.parent.document;
+const setValue = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, "value").set;
+function format(text) {
+  let d = text.replace(/[^0-9]/g, "");
+  if (d.length === 11 && d[0] === "1") d = d.slice(1);
+  d = d.slice(0, 10);
+  if (!d) return "";
+  if (d.length <= 3) return "(" + d;
+  if (d.length <= 6) return "(" + d.slice(0, 3) + ") " + d.slice(3);
+  return "(" + d.slice(0, 3) + ") " + d.slice(3, 6) + "-" + d.slice(6);
+}
+function watch(input) {
+  if (input.dataset.sfPhone) return;
+  input.dataset.sfPhone = "1";
+  input.setAttribute("inputmode", "tel");
+  input.addEventListener("input", function () {
+    const formatted = format(input.value);
+    if (formatted !== input.value) {
+      setValue.call(input, formatted);
+      input.dispatchEvent(new Event("input", {bubbles: true}));
+    }
+  });
+}
+function scan() { page.querySelectorAll('input[aria-label="Phone"]').forEach(watch); }
+new MutationObserver(scan).observe(page.body, {childList: true, subtree: true});
+scan();
+</script>"""
+components.html(PHONE_JS, height=0)

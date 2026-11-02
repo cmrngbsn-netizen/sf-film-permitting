@@ -38,13 +38,17 @@ def new_id():
 
 
 def format_phone(text):
-    """"4155550100" or "1-415-555-0100" -> "(415) 555-0100". Anything that isn't a 10-digit
-    US number (an extension, a short code) is left as typed."""
+    """Digits only, formatted as far as they go: "4155550100" or "1-415-555-0100" ->
+    "(415) 555-0100", "41555" -> "(415) 55". The phone field formats the same way while
+    typing (app.py, PHONE_JS)."""
     digits = re.sub(r"\D", "", text)
     if len(digits) == 11 and digits.startswith("1"):
         digits = digits[1:]
-    if len(digits) != 10:
-        return text.strip()
+    digits = digits[:10]
+    if len(digits) <= 3:
+        return f"({digits}" if digits else ""
+    if len(digits) <= 6:
+        return f"({digits[:3]}) {digits[3:]}"
     return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
 
 

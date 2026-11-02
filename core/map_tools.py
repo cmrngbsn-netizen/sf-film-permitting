@@ -47,7 +47,7 @@ function sfArrow(line) {
 
 STYLE = """
 .leaflet-draw{display:none}
-.sf-wrap{display:flex!important;width:100%!important;border:1px solid #dcdce1;border-radius:12px;overflow:hidden;
+.sf-wrap{display:flex!important;width:100%!important;position:relative;border:1px solid #dcdce1;border-radius:12px;overflow:hidden;
   font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#1d1d1f;background:#fff}
 .sf-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;position:relative}
 .sf-main>#map_div{flex:1 1 auto;width:auto!important;height:auto!important;min-height:0}
@@ -59,7 +59,7 @@ STYLE = """
 .sf-icon svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .sf-icon:hover{background:#e8e8ed}
 .sf-icon.sf-on{background:#0071e3;color:#fff}
-.sf-icon.sf-erase.sf-on,.sf-icon.sf-arm{background:#d70015;color:#fff}
+.sf-icon.sf-erase.sf-on{background:#d70015;color:#fff}
 .sf-icon:disabled{opacity:.35;cursor:default;background:transparent}
 .sf-wrap [data-tip]:hover::after{content:attr(data-tip);position:absolute;z-index:3000;pointer-events:none;
   background:#1d1d1f;color:#fff;font:12px/1.4 -apple-system,Helvetica,Arial,sans-serif;padding:6px 9px;
@@ -83,6 +83,21 @@ STYLE = """
 .sf-found{font-size:11px;color:#6e6e73;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sf-strip .sf-icon{width:30px;height:30px}
 .sf-strip .sf-icon svg{width:18px;height:18px}
+.sf-zoombar{display:flex;align-items:center;gap:5px;padding:0 6px;position:relative}
+.sf-zoombar svg{width:15px;height:15px;fill:none;stroke:#6e6e73;stroke-width:2;stroke-linecap:round;flex:none}
+.sf-zoombar input{width:120px;accent-color:#0071e3;cursor:pointer}
+.sf-zoombar input:disabled{opacity:.35;cursor:default}
+.sf-rail .sf-clear{margin-top:auto}
+.sf-rail .sf-clear:hover{background:#fde8ea;color:#d70015}
+.sf-confirm{position:absolute;left:52px;bottom:10px;z-index:1400;width:270px;background:#fff;border-radius:12px;
+  box-shadow:0 8px 28px rgba(0,0,0,.25);padding:14px;display:none}
+.sf-confirm.sf-open{display:block}
+.sf-confirm b{display:block;margin-bottom:6px}
+.sf-confirm p{margin:0 0 12px;font-size:12px;color:#3a3a3c;line-height:1.4}
+.sf-confirm .sf-acts{display:flex;justify-content:flex-end;gap:8px}
+.sf-confirm .sf-acts button{border-radius:8px;padding:6px 12px;font-weight:600;font-size:12px}
+.sf-confirm .sf-no{border:1px solid #d2d2d7}
+.sf-confirm .sf-yes{background:#d70015;color:#fff}
 .sf-help{position:absolute;top:48px;right:8px;z-index:1200;width:290px;background:#fff;border-radius:12px;
   box-shadow:0 8px 28px rgba(0,0,0,.22);padding:12px 14px;display:none}
 .sf-help.sf-open{display:block}
@@ -346,16 +361,18 @@ class MapTools(MacroElement):
             PALETTE.map(function (c) {
               return '<button type="button" class="sf-swatch" data-color="' + c[1] + '" data-tip="' + c[0] +
                      ' curb line" style="background:' + c[1] + '"></button>';
-            }).join("");
+            }).join("") +
+            // Kept apart from the tools at the bottom of the rail, and it asks first.
+            icon("sf-clear", "trash", "Clear everything" + NL + "Removes every line, arrow, star and text box. Asks first.");
           var strip = document.createElement("div");
           strip.className = "sf-strip";
           strip.innerHTML = '<div class="sf-status"></div>' +
             '<form class="sf-search">' + svg("search") + '<input placeholder="Search an address or corner" ' +
             'aria-label="Search an address or corner"></form><div class="sf-found"></div>' +
             icon("sf-lock", "unlock", "Lock map" + NL + "Keeps the map still while you place things.") +
-            icon("sf-in", "zoomin", "Zoom in" + NL + "Or pinch / Ctrl + scroll on the map.") +
-            icon("sf-out", "zoomout", "Zoom out") +
-            icon("sf-clear", "trash", "Clear everything" + NL + "Removes every line, arrow, star and text box. Click twice.") +
+            '<div class="sf-zoombar" data-tip="Zoom' + NL + 'Drag to zoom. Pinch or Ctrl + scroll on the map works too.">' +
+            svg("zoomout") + '<input type="range" class="sf-zoom" aria-label="Zoom" step="0.25" min="' +
+            map.getMinZoom() + '" max="' + map.getMaxZoom() + '">' + svg("zoomin") + '</div>' +
             icon("sf-helpbtn", "help", "How to use the map");
           var help = document.createElement("div");
           help.className = "sf-help";
@@ -364,12 +381,17 @@ class MapTools(MacroElement):
               return '<div class="sf-hrow">' + svg(t[0]) + '<div><b>' + t[1] + '.</b> ' + t[2] + '</div></div>';
             }).join("") +
             '<div class="sf-hrow">' + svg("lock") + '<div><b>Lock</b> keeps the map still. Scrolling the page ' +
-            'passes over the map; pinch or Ctrl + scroll to zoom.</div></div>';
+            'passes over the map; zoom with the slider, or pinch / Ctrl + scroll.</div></div>' +
+            '<div class="sf-hrow">' + svg("trash") + '<div><b>Clear everything</b> (bottom of the tools) removes ' +
+            'everything on this map, after asking.</div></div>';
+          var confirm = document.createElement("div");
+          confirm.className = "sf-confirm";
           wrap.insertBefore(rail, box);
           wrap.insertBefore(main, box);
           main.appendChild(strip);
           main.appendChild(box);
           main.appendChild(help);
+          wrap.appendChild(confirm);
           map.invalidateSize();
           var $ = function (s) { return wrap.querySelector(s); };
           $(".sf-helpbtn").onclick = function () { help.classList.toggle("sf-open"); };
@@ -460,27 +482,31 @@ class MapTools(MacroElement):
             }
           };
 
-          // Clear everything takes a second click, so it can't happen by accident.
-          var armed = null, CLEAR_TIP = $(".sf-clear").dataset.tip;
-          function disarm() {
-            clearTimeout(armed); armed = null;
-            $(".sf-clear").classList.remove("sf-arm");
-            $(".sf-clear").dataset.tip = CLEAR_TIP;
-          }
+          // Clear everything asks first, saying what it will remove.
+          function closeConfirm() { confirm.classList.remove("sf-open"); }
           $(".sf-clear").onclick = function () {
-            if (!armed) {
-              this.classList.add("sf-arm");
-              this.dataset.tip = "Click again to clear everything";
-              armed = setTimeout(disarm, 3000);
-              return;
-            }
-            disarm();
-            setTool("move");
-            var all = group.getLayers();
-            if (!all.length) return;
-            all.forEach(function (l) { group.removeLayer(l); });
-            map.fire("draw:deleted", {layers: L.layerGroup(all)});
+            var n = {curb: 0, arrow: 0, Star: 0, "Text box": 0};
+            group.eachLayer(function (l) { n[l.feature.properties.kind] = (n[l.feature.properties.kind] || 0) + 1; });
+            function count(k, word) { return n[k] ? n[k] + " " + word + (n[k] > 1 ? "s" : "") : null; }
+            var what = [count("curb", "curb line"), count("arrow", "arrow"), count("Star", "star"),
+                        count("Text box", "text box")].filter(Boolean);
+            confirm.innerHTML = what.length ?
+              '<b>Clear everything on this map?</b><p>This removes ' + what.join(", ") + '. It can&#39;t be undone.</p>' +
+              '<div class="sf-acts"><button type="button" class="sf-no">Cancel</button>' +
+              '<button type="button" class="sf-yes">Clear everything</button></div>' :
+              '<b>The map is already empty.</b><div class="sf-acts"><button type="button" class="sf-no">OK</button></div>';
+            confirm.classList.add("sf-open");
+            confirm.querySelector(".sf-no").onclick = closeConfirm;
+            if (!what.length) return;
+            confirm.querySelector(".sf-yes").onclick = function () {
+              closeConfirm();
+              setTool("move");
+              var all = group.getLayers();
+              all.forEach(function (l) { group.removeLayer(l); });
+              map.fire("draw:deleted", {layers: L.layerGroup(all)});
+            };
           };
+          document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeConfirm(); });
 
           // Lock keeps the map still while placing things; drawing still works.
           function applyLock() {
@@ -490,11 +516,16 @@ class MapTools(MacroElement):
             $(".sf-lock").innerHTML = svg(locked ? "lock" : "unlock");
             $(".sf-lock").dataset.tip = locked ? "Map locked" + NL + "Click to unlock." : "Lock map" + NL + "Keeps the map still while you place things.";
             $(".sf-lock").classList.toggle("sf-on", locked);
-            $(".sf-in").disabled = $(".sf-out").disabled = locked;
+            $(".sf-zoom").disabled = locked;
           }
           $(".sf-lock").onclick = function () { locked = !locked; store("sf-locked", locked ? "1" : "0"); applyLock(); };
-          $(".sf-in").onclick = function () { map.zoomIn(); };
-          $(".sf-out").onclick = function () { map.zoomOut(); };
+          // The zoom slider moves in quarter steps and follows the map's zoom. Zooming out stops
+          // at the whole city (folium hands its min_zoom to tile layers, not to the map).
+          map.setMinZoom(Math.max(map.getMinZoom(), 12));
+          $(".sf-zoom").min = map.getMinZoom();
+          $(".sf-zoom").value = map.getZoom();
+          $(".sf-zoom").oninput = function () { map.setZoom(+this.value, {animate: false}); };
+          map.on("zoomend", function () { $(".sf-zoom").value = map.getZoom(); });
 
           // Plain scrolling passes over the map to the page; a pinch (Ctrl + scroll) zooms.
           var wheel = 0;
@@ -503,8 +534,8 @@ class MapTools(MacroElement):
             e.preventDefault();
             if (locked) return;
             wheel += e.deltaY;
-            if (Math.abs(wheel) >= 40) {
-              map.setZoomAround(map.mouseEventToContainerPoint(e), map.getZoom() + (wheel < 0 ? 1 : -1));
+            if (Math.abs(wheel) >= 15) {
+              map.setZoomAround(map.mouseEventToContainerPoint(e), map.getZoom() + (wheel < 0 ? 0.25 : -0.25));
               wheel = 0;
             }
           }, {passive: false});

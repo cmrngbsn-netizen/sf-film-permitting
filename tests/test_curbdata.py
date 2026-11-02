@@ -32,16 +32,17 @@ def test_describe_and_spaces():
     assert info.car_meters == 12
     assert info.metered
     assert info.suggested_spaces(280) == 12
-    assert info.describe() == ("14 meters (7 general, 5 yellow (commercial loading), 2 black (motorcycle)); "
-                               "2 red-curb driveways (18 ft)")
+    # The Curb column says which meters the 12 spaces are, and that motorcycle meters aren't.
+    assert info.describe() == ("7 general meters, 5 yellow loading meters, 2 motorcycle meters (not counted), "
+                               "2 red-curb driveways")
 
 
 def test_unmetered_spaces_skip_driveways():
-    info = CurbInfo(zones=[("red-curb driveway", 10), ("red-curb driveway", 10), ("blue zone (disabled)", 20)])
+    info = CurbInfo(zones=[("red-curb driveway", 10), ("red-curb driveway", 10), ("blue zone", 20)])
     assert not info.metered
     assert info.suggested_spaces(200) == 9  # (200 - 20) / 20
-    assert info.describe() == "2 red-curb driveways (20 ft); 1 blue zone (disabled) (20 ft)"
-    assert CurbInfo().describe() == "no meters or color curbs on record"
+    assert info.describe() == "2 red-curb driveways, blue zone 20 ft"
+    assert CurbInfo().describe() == "None on record"
 
 
 def test_grant_800_west_side_is_metered(zoner, curbs):
@@ -69,7 +70,7 @@ def test_census_counts_driveways_on_unmetered_curb(zoner, curbs):
     info = curbs.lookup(zone)
     assert not info.metered and info.census is not None
     assert 8 <= info.suggested_spaces(zone.length_ft) <= 20
-    assert "parking census" in info.describe()
+    assert "census" not in info.describe()  # the Curb column lists only what's on the curb
 
 
 def test_metered_curb_ignores_census():

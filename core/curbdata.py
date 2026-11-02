@@ -12,31 +12,31 @@ from core.streets import DATA_DIR
 # driveway right at the end of the line isn't missed.
 END_MARGIN_M = 3
 
-# Meter cap colors, per SFMTA's data dictionary.
+# Meter cap colors, per SFMTA's data dictionary, as short names for the Curb column.
 METER_TYPES = {
     "Grey": "general",
-    "Yellow": "yellow (commercial loading)",
-    "Red": "red (truck loading)",
-    "Green": "green (short-term)",
-    "Black": "black (motorcycle)",
-    "Brown": "brown (tour bus)",
-    "Purple": "purple (boat trailer)",
-    "Blue": "blue (accessible)",
-    "White": "white (passenger loading)",
+    "Yellow": "yellow loading",
+    "Red": "red truck loading",
+    "Green": "green short-term",
+    "Black": "motorcycle",
+    "Brown": "tour bus",
+    "Purple": "boat trailer",
+    "Blue": "blue accessible",
+    "White": "white passenger loading",
 }
 # Motorcycle meters don't hold a car, so they don't count toward car spaces.
 NON_CAR_METERS = {"Black"}
 
-# SFMTA color curb zone types, shortened for the table.
+# SFMTA color curb zone types, as short names for the Curb column.
 CURB_TYPES = {
     "Driveway Red Zone": "red-curb driveway",  # only driveways painted red are mapped
-    "Blue Zone/Disabled Parking": "blue zone (disabled)",
-    "White Zone/Passenger Loading": "white zone (passenger loading)",
-    "Yellow Zone/Commercial Loading": "yellow zone (commercial loading)",
-    "Commercial Loading Zone": "yellow zone (commercial loading)",
-    "6-Wheel Commercial Loading Zone": "6-wheel truck loading zone",
-    "Green Zone/Short Term Parking": "green zone (short-term)",
-    "Green Meter": "green zone (short-term)",
+    "Blue Zone/Disabled Parking": "blue zone",
+    "White Zone/Passenger Loading": "white zone",
+    "Yellow Zone/Commercial Loading": "yellow zone",
+    "Commercial Loading Zone": "yellow zone",
+    "6-Wheel Commercial Loading Zone": "6-wheel loading zone",
+    "Green Zone/Short Term Parking": "green zone",
+    "Green Meter": "green zone",
     "Taxi Zone": "taxi zone",
     "Tour Bus Loading Zone": "tour bus zone",
     "School Bus Loading Zone": "school bus zone",
@@ -46,12 +46,11 @@ CURB_TYPES = {
 }
 
 
-def plural(kind, n):
-    """"blue zone (disabled)" -> "blue zones (disabled)" when n > 1."""
-    if n == 1:
-        return kind
-    head, sep, tail = kind.partition(" (")
-    return f"{head}s{sep}{tail}"
+NOTHING_ON_RECORD = "None on record"
+
+
+def counted(n, thing):
+    return f"{n} {thing}{'s' if n != 1 else ''}"
 
 
 @dataclass
@@ -81,23 +80,19 @@ class CurbInfo:
         return max(1, round((length_ft - driveway_ft) / SPACE_FT))
 
     def describe(self):
-        """"12 meters (7 general, 5 yellow (commercial loading)); 2 driveways (18 ft)"."""
-        parts = []
-        if self.meters:
-            total = sum(self.meters.values())
-            kinds = ", ".join(f"{n} {METER_TYPES.get(c, c.lower())}" for c, n in self.meters.most_common())
-            parts.append(f"{total} meter{'s' if total != 1 else ''} ({kinds})")
-        by_kind = Counter()
-        feet = Counter()
+        """What's on the curb, in the terms the Spaces column counts:
+        "7 general meters, 3 motorcycle meters (not counted), 2 red-curb driveways, blue zone 34 ft"."""
+        parts = [counted(n, f"{METER_TYPES.get(color, color.lower())} meter")
+                 + (" (not counted)" if color in NON_CAR_METERS else "")
+                 for color, n in self.meters.most_common()]
+        by_kind, feet = Counter(), Counter()
         for kind, ft in self.zones:
             by_kind[kind] += 1
             feet[kind] += ft
         for kind, n in by_kind.most_common():
-            parts.append(f"{n} {plural(kind, n)}" + (f" ({feet[kind]} ft)" if feet[kind] else ""))
-        if not self.metered and self.census is not None:
-            parts.append(f"about {round(self.census)} legal spaces per SFMTA parking census "
-                         f"({self.census_year})")
-        return "; ".join(parts) if parts else "no meters or color curbs on record"
+            name = counted(n, kind) if n > 1 or kind == "red-curb driveway" else kind
+            parts.append(name + (f" {feet[kind]} ft" if feet[kind] and kind != "red-curb driveway" else ""))
+        return ", ".join(parts) if parts else NOTHING_ON_RECORD
 
 
 class CurbData:
