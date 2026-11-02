@@ -36,3 +36,17 @@ def test_empty_fields_are_skipped():
     empty = {"Production": "", "Location": "", "# of signs": "0 total spaces", "Block #": []}
     assert build_pdf(placeholder_png(), empty, LEGEND, "   ").startswith(b"%PDF")
     assert build_pdf(placeholder_png(), {}, LEGEND, "").startswith(b"%PDF")
+
+
+def test_tile_math_and_basemap_urls():
+    from core.basemaps import BASEMAPS
+    from core.pdf import tile_x, tile_y
+
+    # Zoom 0 is a single tile covering the world; the equator and prime meridian sit mid-tile.
+    assert tile_x(0, 0) == 0.5 and abs(tile_y(0, 0) - 0.5) < 1e-12
+    # Grant & Washington at zoom 19, per the OpenStreetMap wiki formula: tile 83876, 202611.
+    assert int(tile_x(-122.4066, 19)) == 83876 and int(tile_y(37.7948, 19)) == 202611
+    for b in BASEMAPS:
+        for url in b.layers:
+            assert url.format(z=19, x=1, y=2).startswith("https://")
+        assert b.credit

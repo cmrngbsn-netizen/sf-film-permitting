@@ -34,3 +34,13 @@ rebuild every few weeks to stay current. To rebuild everything from the latest c
 
 Known gaps: 96 intersections have no names in the city data (mostly Treasure Island,
 Yerba Buena Island, Hunters Point and Mission Bay).
+
+## Basemaps
+
+Defined in `core/basemaps.py`:
+
+- **Aerial with street names** (default) and **Aerial**: Esri World Imagery, with Esri's
+  road and place label overlays. Free to use with the credit line shown on the map; check
+  Esri's terms of use before any commercial use.
+- **Street map**: OpenStreetMap tiles, free with the credit line under OpenStreetMap's
+  tile usage policy.

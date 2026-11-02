@@ -2,6 +2,9 @@
 curb zones and the request table."""
 
 import io
+import math
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from xml.sax.saxutils import escape
 
@@ -12,42 +15,77 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Image as PdfImage
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from staticmap import StaticMap
-from staticmap.staticmap import _lat_to_y, _lon_to_x
 
-# OpenStreetMap's tile policy asks for an identifying User-Agent and the credit line.
-TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+from core.basemaps import DEFAULT
+
+# Tile servers ask apps to identify themselves.
 TILE_HEADERS = {"User-Agent": "sf-film-permitting/0.1 (+https://github.com/cmrngbsn-netizen/sf-film-permitting)"}
-MAP_CREDIT = "Map data © OpenStreetMap contributors"
-MAX_ZOOM = 19  # highest zoom OpenStreetMap serves
 
 MAP_SIZE = (1400, 950)  # pixels; drawn at about 200 dpi on the page
 MAP_MARGIN = 150  # pixels kept clear around the zones
 MAX_MAP_HEIGHT_IN = 4.0  # on the page
+TILE = 256  # pixels per map tile
 
 
-def render_map(lines):
-    """PNG bytes of curb zones over OpenStreetMap tiles.
+def tile_x(lon, zoom):
+    """Web Mercator tile coordinate (fractional) for a longitude."""
+    return (lon + 180) / 360 * 2 ** zoom
+
+
+def tile_y(lat, zoom):
+    return (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * 2 ** zoom
+
+
+def fetch_tile(url):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=TILE_HEADERS), timeout=20) as res:
+        return Image.open(io.BytesIO(res.read())).convert("RGBA")
+
+
+def render_tiles(url, zoom, cx, cy):
+    """One tile layer as a transparent RGBA image of MAP_SIZE centered on tile coords
+    (cx, cy); overlay layers keep their transparency."""
+    w, h = MAP_SIZE
+    left, top = cx * TILE - w / 2, cy * TILE - h / 2
+    xs = range(math.floor(left / TILE), math.floor((left + w) / TILE) + 1)
+    ys = range(math.floor(top / TILE), math.floor((top + h) / TILE) + 1)
+    spots = [(x, y) for x in xs for y in ys]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        tiles = pool.map(lambda xy: fetch_tile(url.format(z=zoom, x=xy[0], y=xy[1])), spots)
+    image = Image.new("RGBA", MAP_SIZE, (0, 0, 0, 0))
+    for (x, y), tile in zip(spots, tiles):
+        image.alpha_composite(tile, (round(x * TILE - left), round(y * TILE - top)))
+    return image
+
+
+def render_map(lines, basemap=DEFAULT):
+    """PNG bytes of curb zones over a basemap (core.basemaps).
     lines: [(points [(lat, lon), ...], (r, g, b), label), ...]"""
-    m = StaticMap(*MAP_SIZE, url_template=TILE_URL, headers=TILE_HEADERS)
     every = [p for pts, _, _ in lines for p in pts]
     lats, lons = [p[0] for p in every], [p[1] for p in every]
     center = [(min(lons) + max(lons)) / 2, (min(lats) + max(lats)) / 2]
     # Closest zoom at which every zone fits with a margin around it.
-    zoom = MAX_ZOOM
+    zoom = basemap.max_zoom
     while zoom > 12:
-        w = (_lon_to_x(max(lons), zoom) - _lon_to_x(min(lons), zoom)) * 256
-        h = (_lat_to_y(min(lats), zoom) - _lat_to_y(max(lats), zoom)) * 256
+        w = (tile_x(max(lons), zoom) - tile_x(min(lons), zoom)) * TILE
+        h = (tile_y(min(lats), zoom) - tile_y(max(lats), zoom)) * TILE
         if w <= MAP_SIZE[0] - 2 * MAP_MARGIN and h <= MAP_SIZE[1] - 2 * MAP_MARGIN:
             break
         zoom -= 1
-    base = m.render(zoom=zoom, center=center).convert("RGBA")
+    cx, cy = tile_x(center[0], zoom), tile_y(center[1], zoom)
+    # Tile layers stacked bottom first: imagery, then label overlays.
+    base = Image.new("RGBA", MAP_SIZE, (255, 255, 255, 255))
+    for url in basemap.layers:
+        base.alpha_composite(render_tiles(url, zoom, cx, cy))
+
+    def to_px(lat, lon):
+        return ((tile_x(lon, zoom) - cx) * TILE + MAP_SIZE[0] / 2,
+                (tile_y(lat, zoom) - cy) * TILE + MAP_SIZE[1] / 2)
 
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font = ImageFont.load_default(size=26)
     for pts, rgb, label in lines:
-        px = [(m._x_to_px(_lon_to_x(lon, zoom)), m._y_to_px(_lat_to_y(lat, zoom))) for lat, lon in pts]
+        px = [to_px(lat, lon) for lat, lon in pts]
         draw.line(px, fill=rgb + (255,), width=9, joint="curve")
         for x, y in (px[0], px[-1]):
             draw.ellipse([x - 9, y - 9, x + 9, y + 9], fill=rgb + (255,))
@@ -58,9 +96,9 @@ def render_map(lines):
                        fill="white", outline=rgb + (255,), width=3)
         draw.text((x, y), label, fill="black", font=font, anchor="mm")
     credit_font = ImageFont.load_default(size=20)
-    box = draw.textbbox((MAP_SIZE[0] - 12, MAP_SIZE[1] - 10), MAP_CREDIT, font=credit_font, anchor="rd")
+    box = draw.textbbox((MAP_SIZE[0] - 12, MAP_SIZE[1] - 10), basemap.credit, font=credit_font, anchor="rd")
     draw.rectangle([box[0] - 8, box[1] - 6, MAP_SIZE[0], MAP_SIZE[1]], fill=(255, 255, 255, 220))
-    draw.text((MAP_SIZE[0] - 12, MAP_SIZE[1] - 10), MAP_CREDIT, fill=(60, 60, 60, 255),
+    draw.text((MAP_SIZE[0] - 12, MAP_SIZE[1] - 10), basemap.credit, fill=(60, 60, 60, 255),
               font=credit_font, anchor="rd")
 
     out = io.BytesIO()

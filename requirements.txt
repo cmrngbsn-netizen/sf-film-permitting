@@ -3,4 +3,3 @@ streamlit-folium==0.25.3
 folium==0.20.0
 numpy==2.5.4
 reportlab==5.1.0
-staticmap==0.5.7
