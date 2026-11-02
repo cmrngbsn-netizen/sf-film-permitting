@@ -1,11 +1,13 @@
 """SF Film Permit helper (beta).
 
-Draw lines along the curbs you need for a shoot. Each line is split into one zone per
-block and named the way Film SF names them ("8 spaces on north side 400-490 McAllister St"),
-then exported as a one-page parking request PDF.
+Draw lines along the curbs you need for a shoot, at one or more locations. Each line is
+split into one zone per block and named the way Film SF names them ("8 spaces on north
+side 400-490 McAllister St"), then exported as a parking request PDF with one page per
+location. Requests can be saved to a file and reopened.
 Run locally with: streamlit run app.py
 """
 
+import re
 import sys
 from datetime import date, datetime, time
 from pathlib import Path
@@ -33,10 +35,10 @@ if getattr(sys, "_sf_core_version", None) != code_version():
 from core.basemaps import DEFAULT as BASEMAP  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
 from core.curbs import CurbZoner  # noqa: E402
-from core.pdf import build_pdf, render_map  # noqa: E402
+from core.pdf import Page, build_pdf, render_map  # noqa: E402
+from core.request import LOCATION_FIELDS, REQUEST_FIELDS, Request  # noqa: E402
 from core.streets import StreetIndex  # noqa: E402
-from core.summary import (METERS, PICTURE, SHOOT_FIELDS, USES, WORKING, Window,  # noqa: E402
-                          ZoneRequest, summarize)
+from core.summary import METERS, PICTURE, USES, WORKING, Window, ZoneRequest, summarize  # noqa: E402
 
 SF_CENTER = [37.7749, -122.4194]
 SF_BOUNDS = [[37.70, -122.53], [37.84, -122.35]]  # keeps the map panned to the city
@@ -89,10 +91,23 @@ def base_map(**kwargs):
     return m
 
 
-def drawing_map():
+def fit(m, points):
+    m.fit_bounds([[min(p[0] for p in points), min(p[1] for p in points)],
+                  [max(p[0] for p in points), max(p[1] for p in points)]], padding=(30, 30))
+
+
+def drawing_map(lines):
+    """The map to draw on, starting with a location's saved lines, which stay editable."""
     m = base_map(location=SF_CENTER, zoom_start=14)
+    saved = folium.FeatureGroup(name="Curb lines").add_to(m)
+    for line in lines:
+        folium.PolyLine(line, color="#d62728", weight=5).add_to(saved)
+    if lines:
+        fit(m, [p for line in lines for p in line])
     # Only the line tool: click along the curb, click the last point again to finish.
     Draw(
+        feature_group=saved,
+        show_geometry_on_click=False,
         draw_options={
             "polyline": {"shapeOptions": {"color": "#d62728", "weight": 5}},
             "polygon": False, "rectangle": False, "circle": False,
@@ -113,9 +128,7 @@ def zones_map(lines):
             html=f'<div style="background:white;color:black;border:2px solid {hex_color(rgb)};'
                  f'width:30px;text-align:center;font:bold 12px sans-serif">{label}</div>',
         )).add_to(m)
-    every = [p for pts, _, _ in lines for p in pts]
-    m.fit_bounds([[min(p[0] for p in every), min(p[1] for p in every)],
-                  [max(p[0] for p in every), max(p[1] for p in every)]], padding=(30, 30))
+    fit(m, [p for pts, _, _ in lines for p in pts])
     return m
 
 
@@ -149,30 +162,155 @@ def snapshot(key, build):
     return store[key]
 
 
+def bound_text(label, store, name, key, area=False, **kwargs):
+    """A text box whose value lives in store[name]."""
+    if key not in st.session_state:
+        st.session_state[key] = store.get(name, "")
+    (st.text_area if area else st.text_input)(label, key=key, **kwargs)
+    store[name] = st.session_state[key].strip() if not area else st.session_state[key]
+
+
+def zone_defaults(z):
+    """Curb, meters and spaces filled in from SFMTA data."""
+    info = curb_data().lookup(z)
+    return {"Curb": info.describe(), "Meters": "Metered" if info.metered else "Non-metered",
+            "Spaces": info.suggested_spaces(z.length_ft), "Use": WORKING}
+
+
+def location_zones(loc):
+    """A location's zones, their ids, and their rows (city data plus the user's edits)."""
+    zones = [z for line in loc.lines for z in zoner().zones(line)]
+    ids = [zone_id(z) for z in zones]
+    rows = [{**zone_defaults(z), **loc.zones.get(zid, {})} for z, zid in zip(zones, ids)]
+    return zones, ids, rows
+
+
+def location_page(req, loc):
+    """(map lines, table fields) for one location's page, or None if it has no zones."""
+    zones, ids, rows = location_zones(loc)
+    if not zones:
+        return None
+    asks = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"],
+                        loc.windows.get(zid, []), r["Curb"] or "")
+            for z, zid, r in zip(zones, ids, rows)]
+    drawn = tuple((tuple(z.points), USE_COLORS[a.use], str(a.spaces)) for z, a in zip(zones, asks))
+    # Same order as the Film SF slides: who, where, then the parking ask.
+    fields = {
+        "Production": req.info["Production"],
+        "Contact": loc.info["Contact"],
+        "Phone": loc.info["Phone"],
+        "Email": req.info["Email"],
+        "Film SF permit #": req.info["Film SF permit #"],
+        "Location": loc.info["Location"],
+        "Scene": loc.info["Scene"],
+        **summarize(asks),
+    }
+    return drawn, fields
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+# The request being worked on. `gen` changes when a saved request is opened, so every
+# widget starts fresh from the opened file instead of keeping what was on screen.
+if "request" not in st.session_state:
+    st.session_state.request = Request()
+    st.session_state.gen = 0
+req = st.session_state.request
+gen = st.session_state.gen
+
+with st.sidebar:
+    st.header("Request file")
+    upload = st.file_uploader("Open a saved request", type="json", key=f"g{gen}-open")
+    if upload is not None:
+        try:
+            opened = Request.from_json(upload.getvalue().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            st.error(f"Couldn't open that file: {e}")
+        else:
+            st.session_state.request = opened
+            st.session_state.gen += 1
+            st.session_state.snapshots = {}
+            st.rerun()
+
+# Which location is open. Kept in plain session state, not in a picker widget: a picker
+# resets itself when a location is renamed, which would switch locations mid-edit.
+if st.session_state.get("current") not in [loc.id for loc in req.locations]:
+    st.session_state.current = req.locations[0].id
+
+
+def open_location(loc_id):
+    st.session_state.current = loc_id
+
+
+def add_location():
+    st.session_state.current = req.add_location().id
+
+
+def remove_location():
+    req.remove_location(st.session_state.current)
+    st.session_state.current = req.locations[0].id
+
+
+with st.expander("Shoot info (shared by all locations)", expanded=True):
+    cols = st.columns(len(REQUEST_FIELDS))
+    for col, name in zip(cols, REQUEST_FIELDS):
+        with col:
+            bound_text(name, req.info, name, f"g{gen}-req-{name}")
+
+st.markdown("**Locations** (one PDF page each)")
+buttons = st.columns(len(req.locations) + 2)
+for col, (n, place) in zip(buttons, enumerate(req.locations, start=1)):
+    with col:
+        st.button(f"{n}. {place.title}", key=f"g{gen}-open-{place.id}", use_container_width=True,
+                  type="primary" if place.id == st.session_state.current else "secondary",
+                  on_click=open_location, args=(place.id,))
+with buttons[-2]:
+    st.button("➕ Add location", on_click=add_location, use_container_width=True)
+with buttons[-1]:
+    with st.popover("Remove", use_container_width=True):
+        st.write("Remove the open location and its lines?")
+        st.button("Yes, remove it", on_click=remove_location, type="primary")
+
+loc = next(loc for loc in req.locations if loc.id == st.session_state.current)
+
+# Each time a location is opened, its map starts from that location's saved lines. While
+# it stays open, the map is left alone (rebuilding it would reset the view) and what the
+# user draws comes back through all_drawings.
+if st.session_state.get("shown") != (gen, loc.id):
+    st.session_state.shown = (gen, loc.id)
+    st.session_state.map_opens = st.session_state.get("map_opens", 0) + 1
+    st.session_state.map_lines = [list(line) for line in loc.lines]
+
 map_col, side_col = st.columns([3, 2])
 
 with map_col:
     st.caption("Click the line tool on the left of the map, then click along the curb you need. "
                "Click the last point again (or **Finish**) to end the line. Draw one line per "
-               "stretch of curb; a line can turn corners.")
-    result = st_folium(drawing_map(), height=600, use_container_width=True,
-                       returned_objects=["all_drawings"])
+               "stretch of curb; a line can turn corners. Use the pencil to move a line and the "
+               "trash can to delete one.")
+    result = st_folium(drawing_map(st.session_state.map_lines), height=600,
+                       use_container_width=True, returned_objects=["all_drawings"],
+                       key=f"draw-{st.session_state.map_opens}")
 
-drawings = (result or {}).get("all_drawings") or []
-lines = [[(lat, lon) for lon, lat in d["geometry"]["coordinates"]]
-         for d in drawings if d.get("geometry", {}).get("type") == "LineString"]
-zones = [z for line in lines for z in zoner().zones(line)]
+drawings = (result or {}).get("all_drawings")
+if drawings is not None:  # None until the user draws, edits or deletes on this map
+    loc.lines = [[(lat, lon) for lon, lat in d["geometry"]["coordinates"]]
+                 for d in drawings if d.get("geometry", {}).get("type") == "LineString"]
+zones, ids, base_rows = location_zones(loc)
 
 with side_col:
-    with st.expander("Shoot info", expanded=True):
-        for name in SHOOT_FIELDS:
-            st.text_input(name, key=f"shoot_{name}")
-    st.text_input("Location", key="location",
-                  placeholder="e.g. City Hall, McAllister @ Larkin & Polk")
-    st.text_area("Notes", key="notes", height=100,
-                 placeholder="Anything the permit office should know")
-    if not lines:
-        st.write("No curb lines drawn yet.")
+    for name in LOCATION_FIELDS:
+        placeholder = {"Location": "e.g. City Hall, McAllister @ Larkin & Polk",
+                       "Scene": "e.g. INT City Hall - SHOOT"}.get(name)
+        bound_text(name, loc.info, name, f"g{gen}-{loc.id}-{name}", placeholder=placeholder)
+    store = {"notes": loc.notes}
+    bound_text("Notes", store, "notes", f"g{gen}-{loc.id}-notes", area=True, height=100,
+               placeholder="Anything the permit office should know about this location")
+    loc.notes = store["notes"]
+    if not loc.lines:
+        st.write("No curb lines drawn at this location yet.")
     elif not zones:
         st.warning("The line isn't close enough to a street. Draw it along the curb.")
     else:
@@ -180,11 +318,8 @@ with side_col:
                  "Review them below the map.")
 
 if zones:
-    ids = [zone_id(z) for z in zones]
     labels = [f"{i} · {z.block} ({z.side})" for i, z in enumerate(zones, start=1)]
-    zone_edits = st.session_state.setdefault("zone_edits", {})   # zone id -> edited row
-    zone_windows = st.session_state.setdefault("zone_windows", {})  # zone id -> [Window]
-    zones_key = str(hash(tuple(ids)))
+    zones_key = f"g{gen}-{loc.id}-{hash(tuple(ids))}"
 
     st.divider()
     st.subheader("Curb zones")
@@ -194,27 +329,15 @@ if zones:
                f"better.")
 
     def zone_rows():
-        rows = []
-        for i, (z, zid) in enumerate(zip(zones, ids), start=1):
-            info = curb_data().lookup(z)
-            row = {
-                "Zone": i,
-                "Block": z.block,
-                "Side": z.side,
-                "Between": z.between,
-                "Length (ft)": round(z.length_ft),
-                "Curb": info.describe(),
-                "Meters": "Metered" if info.metered else "Non-metered",
-                "Spaces": info.suggested_spaces(z.length_ft),
-                "Use": WORKING,
-            }
-            row.update(zone_edits.get(zid, {}))  # earlier edits to this zone win
-            rows.append(row)
-        return rows
+        return [{"Zone": i, "Block": z.block, "Side": z.side, "Between": z.between,
+                 "Length (ft)": round(z.length_ft), **row}
+                for i, (z, row) in enumerate(zip(zones, base_rows), start=1)]
 
     edited = st.data_editor(
         snapshot(f"zones-{zones_key}", zone_rows), key=f"zones-{zones_key}", hide_index=True,
         use_container_width=True,
+        column_order=["Zone", "Block", "Side", "Between", "Length (ft)", "Curb", "Meters",
+                      "Spaces", "Use"],
         disabled=["Zone", "Block", "Side", "Between", "Length (ft)"],
         column_config={
             "Curb": st.column_config.TextColumn(width="large"),
@@ -224,7 +347,7 @@ if zones:
         },
     )
     for zid, row in zip(ids, edited):
-        zone_edits[zid] = {k: row[k] for k in ("Curb", "Meters", "Spaces", "Use")}
+        loc.zones[zid] = {k: row[k] for k in ("Curb", "Meters", "Spaces", "Use")}
 
     st.subheader("Dates & hours")
     st.caption("One row per zone to start. To book a zone for more than one day or time window, "
@@ -232,11 +355,8 @@ if zones:
                "the start means the next day.")
 
     def schedule_rows():
-        rows = []
-        for label, zid in zip(labels, ids):
-            for w in zone_windows.get(zid) or [Window()]:
-                rows.append({"Zone": label, "Date": w.date, "Start": w.start, "End": w.end})
-        return rows
+        return [{"Zone": label, "Date": w.date, "Start": w.start, "End": w.end}
+                for label, zid in zip(labels, ids) for w in loc.windows.get(zid) or [Window()]]
 
     schedule = st.data_editor(
         snapshot(f"schedule-{zones_key}", schedule_rows), key=f"schedule-{zones_key}",
@@ -249,21 +369,13 @@ if zones:
         },
     )
     for zid in ids:
-        zone_windows[zid] = []
+        loc.windows[zid] = []
     for row in schedule:
         if row.get("Zone") in labels:
-            zid = ids[labels.index(row["Zone"])]
-            zone_windows[zid].append(Window(as_date(row.get("Date")), as_time(row.get("Start")),
-                                            as_time(row.get("End"))))
+            loc.windows[ids[labels.index(row["Zone"])]].append(
+                Window(as_date(row.get("Date")), as_time(row.get("Start")), as_time(row.get("End"))))
 
-    requests = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"],
-                            zone_windows[zid], r["Curb"] or "")
-                for z, zid, r in zip(zones, ids, edited)]
-    drawn = tuple((tuple(z.points), USE_COLORS[r.use], str(r.spaces)) for z, r in zip(zones, requests))
-    shoot = {name: st.session_state.get(f"shoot_{name}", "").strip() for name in SHOOT_FIELDS}
-    project = shoot.pop("Project")
-    fields = {**shoot, "Location": st.session_state.get("location", "").strip(), **summarize(requests)}
-
+    drawn, fields = location_page(req, loc)
     st.divider()
     map_col2, list_col = st.columns([3, 2])
     with map_col2:
@@ -271,8 +383,7 @@ if zones:
                   returned_objects=[], key="reviewed")
         st.caption(f":red[■] {WORKING} · :blue[■] {PICTURE}")
     with list_col:
-        if project:
-            st.markdown(f"#### {project}")
+        st.markdown("#### This location's page")
         for name, value in fields.items():
             if not value:
                 continue
@@ -281,9 +392,26 @@ if zones:
             else:
                 st.markdown(f"**{name}:** {value}")
 
-        st.download_button(
-            "Download PDF", type="primary", mime="application/pdf",
-            file_name=f"sf-parking-request-{date.today():%Y-%m-%d}.pdf",
-            data=build_pdf(pdf_map(drawn), fields, list(USE_COLORS.items()),
-                           st.session_state.get("notes", ""), project=project),
-        )
+# The whole request: one PDF page per location that has zones.
+st.divider()
+pages = [(loc_, page) for loc_ in req.locations if (page := location_page(req, loc_))]
+project = req.info["Project"]
+if pages:
+    st.write(f"**PDF:** {len(pages)} page{'s' if len(pages) != 1 else ''}, one per location: "
+             + ", ".join(loc_.title for loc_, _ in pages))
+    st.download_button(
+        "Download PDF", type="primary", mime="application/pdf",
+        file_name=f"{slug(project) or 'sf-parking-request'}-{date.today():%Y-%m-%d}.pdf",
+        data=build_pdf([Page(pdf_map(drawn_), fields_, loc_.notes) for loc_, (drawn_, fields_) in pages],
+                       list(USE_COLORS.items()), project=project),
+    )
+else:
+    st.write("Draw curb lines at a location to build the PDF.")
+
+with st.sidebar:
+    st.download_button("Save request", req.to_json(), mime="application/json",
+                       file_name=f"{slug(project) or 'sf-parking-request'}.json",
+                       help="Download everything entered so far, to open again later.",
+                       use_container_width=True)
+    st.caption("Nothing is kept when the page is closed or refreshed, so save the request "
+               "to a file to come back to it.")

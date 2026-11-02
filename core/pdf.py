@@ -5,6 +5,7 @@ import io
 import math
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date
 from xml.sax.saxutils import escape
 
@@ -14,7 +15,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Image as PdfImage
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from core.basemaps import DEFAULT
 
@@ -106,10 +107,17 @@ def render_map(lines, basemap=DEFAULT):
     return out.getvalue()
 
 
-def build_pdf(map_png, fields, legend, notes, project="", created=None):
-    """PDF bytes.
-    fields: {label: text or [lines]} in table order (shoot info, location, then the
-    core.summary fields); empty values are left out. legend: [(label, (r, g, b)), ...]."""
+@dataclass
+class Page:
+    """One location of the request: its map, table fields and notes."""
+    map_png: bytes
+    fields: dict  # {label: text or [lines]} in table order; empty values are left out
+    notes: str = ""
+
+
+def build_pdf(pages, legend, project="", created=None):
+    """PDF bytes with one page per location, laid out like the Film SF slides.
+    legend: [(label, (r, g, b)), ...]."""
     created = created or date.today()
     styles = getSampleStyleSheet()
     body = styles["BodyText"]
@@ -121,41 +129,45 @@ def build_pdf(map_png, fields, legend, notes, project="", created=None):
                             leftMargin=0.75 * inch, rightMargin=0.75 * inch,
                             topMargin=0.5 * inch, bottomMargin=0.5 * inch)
     width = doc.width
-    image = Image.open(io.BytesIO(map_png))
-    # Shrink the map (keeping its shape) so the request table and notes fit on the page.
-    map_h = min(width * image.height / image.width, MAX_MAP_HEIGHT_IN * inch)
-    map_w = map_h * image.width / image.height
 
     def cell(value):
         lines = value if isinstance(value, list) else [value]
         return Paragraph("<br/>".join(escape(v) for v in lines), body)
 
-    rows = [[Paragraph(f"{k.upper()}:", label), cell(v)] for k, v in fields.items() if v]
     key = "&nbsp;&nbsp;&nbsp;".join(
         f'<font color="#{r:02x}{g:02x}{b:02x}">&#9632;</font> {escape(name)}' for name, (r, g, b) in legend)
+    heading = "Parking Request" + (f" - {escape(project)}" if project else "")
 
-    story = [Paragraph("Parking Request", styles["Title"])]
-    if project:
-        story.append(Paragraph(escape(project), styles["Heading2"]))
-    story += [
-        Paragraph(f"Created {created:%B %-d, %Y}", body),
-        Paragraph("Planning aid, not an official filing. Requests still go through "
-                  "Film SF and SFMTA.", small),
-        Spacer(1, 8),
-        PdfImage(io.BytesIO(map_png), width=map_w, height=map_h),
-        Paragraph(key, small),
-        Spacer(1, 10),
-    ]
-    if rows:
-        table = Table(rows, colWidths=[1.5 * inch, width - 1.5 * inch])
-        table.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e8e8ec")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ]))
-        story.append(table)
-    if notes.strip():
-        story += [Spacer(1, 8), Paragraph("Notes", styles["Heading3"]),
-                  Paragraph(escape(notes).replace("\n", "<br/>"), body)]
+    story = []
+    for n, page in enumerate(pages, start=1):
+        if n > 1:
+            story.append(PageBreak())
+        image = Image.open(io.BytesIO(page.map_png))
+        # Shrink the map (keeping its shape) so the request table and notes fit on the page.
+        map_h = min(width * image.height / image.width, MAX_MAP_HEIGHT_IN * inch)
+        map_w = map_h * image.width / image.height
+        story += [
+            Paragraph(heading, styles["Heading1"]),
+            Paragraph(f"Created {created:%B %-d, %Y}"
+                      + (f" &nbsp;·&nbsp; Page {n} of {len(pages)}" if len(pages) > 1 else ""), body),
+            Paragraph("Planning aid, not an official filing. Requests still go through "
+                      "Film SF and SFMTA.", small),
+            Spacer(1, 8),
+            PdfImage(io.BytesIO(page.map_png), width=map_w, height=map_h),
+            Paragraph(key, small),
+            Spacer(1, 10),
+        ]
+        rows = [[Paragraph(f"{k.upper()}:", label), cell(v)] for k, v in page.fields.items() if v]
+        if rows:
+            table = Table(rows, colWidths=[1.5 * inch, width - 1.5 * inch])
+            table.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e8e8ec")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
+            story.append(table)
+        if page.notes.strip():
+            story += [Spacer(1, 8), Paragraph("Notes", styles["Heading3"]),
+                      Paragraph(escape(page.notes).replace("\n", "<br/>"), body)]
     doc.build(story)
     return buf.getvalue()

@@ -1,9 +1,10 @@
 # SF Film Parking Request (beta)
 
-Draw lines along the curbs you need for a film shoot in San Francisco. Each line is split
-into one zone per block and named the way Film SF does ("8 metered spaces on north side
-400-490 McAllister St"). Set each zone's use, meters, date and hours, then download a
-one-page parking request PDF.
+Draw lines along the curbs you need for a film shoot in San Francisco, at one or more
+locations. Each line is split into one zone per block and named the way Film SF does
+("8 metered spaces on north side 400-490 McAllister St"). Set each zone's use, meters,
+dates and hours, then download a parking request PDF with one page per location. Save the
+request to a `.json` file from the sidebar and open it again later.
 
 ## Run locally
 
@@ -16,7 +17,7 @@ python3 -m venv .venv
 ## Tests
 
 ```bash
-.venv/bin/pip install pytest
+.venv/bin/pip install pytest pypdf
 .venv/bin/python -m pytest
 ```
 

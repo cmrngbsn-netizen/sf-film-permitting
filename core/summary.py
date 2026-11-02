@@ -8,11 +8,6 @@ PICTURE = "Picture"
 USES = [WORKING, PICTURE]
 METERS = ["Metered", "Non-metered", "Not sure"]
 
-# Shoot info fields, in the order they go at the top of the request (the red box on the
-# Film SF slides holds Production, Contact and Phone).
-SHOOT_FIELDS = ["Production", "Project", "Scene", "Contact", "Phone", "Email", "Film SF permit #"]
-
-
 @dataclass
 class Window:
     """One stretch of time a zone is occupied."""

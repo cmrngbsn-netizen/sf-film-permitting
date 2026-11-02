@@ -3,8 +3,9 @@
 import io
 
 from PIL import Image
+from pypdf import PdfReader
 
-from core.pdf import build_pdf
+from core.pdf import Page, build_pdf
 
 FIELDS = {
     "Production": "High Priestess of Souls, LLC",
@@ -27,15 +28,21 @@ def placeholder_png():
 
 
 def test_pdf_builds_with_special_characters():
-    pdf = build_pdf(placeholder_png(), FIELDS, LEGEND, "Crew arrives 6am & wraps <8pm>.",
+    pdf = build_pdf([Page(placeholder_png(), FIELDS, "Crew arrives 6am & wraps <8pm>.")], LEGEND,
                     project="Untitled <Project> & Co")
     assert pdf.startswith(b"%PDF")
 
 
+def test_one_page_per_location():
+    pages = [Page(placeholder_png(), FIELDS, "notes"), Page(placeholder_png(), FIELDS),
+             Page(placeholder_png(), {})]
+    assert len(PdfReader(io.BytesIO(build_pdf(pages, LEGEND))).pages) == 3
+
+
 def test_empty_fields_are_skipped():
     empty = {"Production": "", "Location": "", "# of signs": "0 total spaces", "Block #": []}
-    assert build_pdf(placeholder_png(), empty, LEGEND, "   ").startswith(b"%PDF")
-    assert build_pdf(placeholder_png(), {}, LEGEND, "").startswith(b"%PDF")
+    assert build_pdf([Page(placeholder_png(), empty, "   ")], LEGEND).startswith(b"%PDF")
+    assert build_pdf([Page(placeholder_png(), {})], LEGEND).startswith(b"%PDF")
 
 
 def test_tile_math_and_basemap_urls():
