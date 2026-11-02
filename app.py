@@ -7,6 +7,8 @@ location. Requests can be saved to a file and reopened.
 Run locally with: streamlit run app.py
 """
 
+import io
+import math
 import re
 import sys
 from dataclasses import replace
@@ -14,6 +16,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 
 import folium
+import pypdfium2
 import streamlit as st
 from folium.plugins import Draw, Geocoder
 from streamlit_folium import st_folium
@@ -37,12 +40,14 @@ from core.basemaps import DEFAULT as BASEMAP  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
 from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
 from core.drawings import merge  # noqa: E402
-from core.markers_js import SCREEN_PX, MarkerTools  # noqa: E402
-from core.pdf import Page, build_pdf, render_map  # noqa: E402
+from core.map_tools import MapTools  # noqa: E402
+from core.pdf import Box, Page, build_pdf, render_map, tile_x, tile_y  # noqa: E402
 from core.request import (LINE_COLORS, LOCATION_FIELDS, MARKER_KINDS, REQUEST_FIELDS,  # noqa: E402
-                          STAR, TEXT_SIZES, Line, Marker, Request, format_phone)
+                          STAR, TEXT_COLOR, TEXT_PX, Arrow, Line, Marker, Request, format_phone,
+                          text_size)
 from core.streets import StreetIndex  # noqa: E402
-from core.summary import METERS, PICTURE, USES, WORKING, Window, ZoneRequest, summarize  # noqa: E402
+from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest, by_color,  # noqa: E402
+                          summarize)
 
 SF_CENTER = [37.7749, -122.4194]
 SF_BOUNDS = [[37.70, -122.53], [37.84, -122.35]]  # keeps the map panned to the city
@@ -75,9 +80,22 @@ def curb_data():
 
 
 @st.cache_data(show_spinner="Drawing the map for the PDF...")
-def pdf_map(lines, markers):
+def pdf_map(lines, arrows, markers):
     return render_map([(list(pts), rgb(color), label) for pts, color, label in lines],
-                      list(markers), BASEMAP)
+                      [(kind, point, text, size, rgb(color)) for kind, point, text, size, color in markers],
+                      BASEMAP, [(list(pts), rgb(color)) for pts, color in arrows])
+
+
+@st.cache_data(show_spinner="Drawing the page previews...")
+def pdf_pages(pdf):
+    """Each PDF page as a PNG, for the preview."""
+    doc = pypdfium2.PdfDocument(pdf)
+    out = []
+    for page in doc:
+        buf = io.BytesIO()
+        page.render(scale=1.6).to_pil().save(buf, format="PNG")
+        out.append(buf.getvalue())
+    return out
 
 
 def rgb(hex_color):
@@ -88,16 +106,30 @@ def rgb(hex_color):
 def star_icon():
     return folium.DivIcon(icon_size=(28, 28), icon_anchor=(14, 14),
                           html='<div style="font-size:28px;line-height:28px;color:#ff8c00;'
-                               'text-shadow:0 0 2px #5a3200">★</div>')
+                               'text-shadow:0 1px 2px rgba(90,50,0,.6)">★</div>')
 
 
-def text_icon(text, size="Medium"):
-    """A white box with a dark border, centered on the marker's point."""
+def text_icon(text, size, color):
+    """A text box like the drawing map's: rounded, with a soft shadow, centered on its point."""
     return folium.DivIcon(icon_size=(0, 0), icon_anchor=(0, 0),
                           html='<div style="position:absolute;transform:translate(-50%,-50%);'
-                               'white-space:pre;background:white;color:black;border:2px solid #282828;'
-                               f'padding:2px 6px;font:bold {SCREEN_PX.get(size, 14)}px sans-serif">'
+                               'white-space:pre;background:#fff;color:#1d1d1f;font-weight:650;'
+                               'font-family:-apple-system,Helvetica,Arial,sans-serif;line-height:1.2;'
+                               f'font-size:{size}px;padding:.35em .75em;border:2px solid {color};'
+                               'border-radius:7px;box-shadow:0 3px 8px rgba(0,0,0,.28)">'
                                f'{escape_html(text) or "Text box"}</div>')
+
+
+def add_arrow(m, points, color):
+    """A line with a triangle head at its last point."""
+    folium.PolyLine(points, color=color, weight=4).add_to(m)
+    (ay, ax), (by, bx) = points[-2], points[-1]
+    # Heading on screen (Web Mercator), so the head lines up with the drawn line.
+    angle = math.degrees(math.atan2(tile_y(by, 0) - tile_y(ay, 0), tile_x(bx, 0) - tile_x(ax, 0)))
+    folium.Marker(points[-1], icon=folium.DivIcon(icon_size=(0, 0), icon_anchor=(0, 0), html=(
+        '<div style="position:absolute;left:-18px;top:-8px;width:18px;height:16px;'
+        f'transform-origin:18px 8px;transform:rotate({angle}deg)"><svg width="18" height="16">'
+        f'<path d="M0 0 L18 8 L0 16 Z" fill="{color}"/></svg></div>'))).add_to(m)
 
 
 def escape_html(text):
@@ -105,7 +137,7 @@ def escape_html(text):
 
 
 def add_marker(group, marker):
-    icon = star_icon() if marker.kind == STAR else text_icon(marker.text, marker.size)
+    icon = star_icon() if marker.kind == STAR else text_icon(marker.text, marker.size, marker.color)
     folium.Marker(marker.point, icon=icon).add_to(group)
 
 
@@ -129,31 +161,35 @@ def fit(m, points):
                   [max(p[0] for p in points), max(p[1] for p in points)]], padding=(30, 30))
 
 
-def drawing_map(lines, markers, color, marker_kind):
-    """The map to draw on, starting with a location's saved lines and markers, which stay
-    editable. New lines are drawn in `color`."""
+def drawing_map(lines, arrows, markers, line_kind, color, marker_kind):
+    """The map to draw on, starting with a location's saved lines, arrows and markers, which
+    stay editable. The line tool draws `line_kind` ("curb" or "arrow") in `color`."""
     m = base_map(location=SF_CENTER, zoom_start=14)
-    saved = folium.FeatureGroup(name="Curb lines").add_to(m)
+    saved = folium.FeatureGroup(name="Drawing").add_to(m)
+    # Order matters: core.map_tools matches these to their saved details in this order.
     for line in lines:
         folium.PolyLine(line.points, color=line.color, weight=5).add_to(saved)
+    for arrow in arrows:
+        folium.PolyLine(arrow.points, color=arrow.color, weight=4).add_to(saved)
     for marker in markers:
-        add_marker(saved, marker)
-    every = [p for line in lines for p in line.points] + [mk.point for mk in markers]
+        folium.Marker(marker.point).add_to(saved)  # its look comes from core.map_tools
+    every = ([p for line in lines for p in line.points] + [p for a in arrows for p in a.points]
+             + [mk.point for mk in markers])
     if every:
         fit(m, every)
-    # The line tool for curbs and the marker tool for stars and text boxes.
+    # The line tool for curbs and arrows, the marker tool for stars and text boxes.
     Draw(
         feature_group=saved,
         show_geometry_on_click=False,
         draw_options={
-            "polyline": {"shapeOptions": {"color": color, "weight": 5}},
+            "polyline": {"shapeOptions": {"color": color, "weight": 5 if line_kind == "curb" else 4}},
             "marker": True,
             "polygon": False, "rectangle": False, "circle": False, "circlemarker": False,
         },
         edit_options={"edit": True, "remove": True},
     ).add_to(m)
-    # Numbered stars and text boxes you can click to write in (see core.markers_js).
-    m.add_child(MarkerTools(saved, markers, marker_kind, TEXT_SIZES))
+    m.add_child(MapTools(saved, lines, arrows, markers, line_kind, color, marker_kind,
+                         list(LINE_COLORS.values()), TEXT_COLOR, TEXT_PX))
     # Address search, limited to San Francisco (OpenStreetMap's Nominatim).
     Geocoder(position="topright", add_marker=False, zoom=18, provider_options={
         "geocodingQueryParams": {"viewbox": "-122.53,37.84,-122.35,37.70", "bounded": 1,
@@ -161,8 +197,8 @@ def drawing_map(lines, markers, color, marker_kind):
     return m
 
 
-def zones_map(lines, markers):
-    """Reviewed zones: one colored line per zone with its space count, plus markers."""
+def zones_map(lines, arrows, markers):
+    """Reviewed zones: one colored line per zone with its space count, plus arrows and markers."""
     m = base_map()
     for pts, color, label in lines:
         folium.PolyLine(pts, color=color, weight=7, opacity=0.9).add_to(m)
@@ -171,9 +207,12 @@ def zones_map(lines, markers):
             html=f'<div style="background:white;color:black;border:2px solid {color};'
                  f'width:30px;text-align:center;font:bold 12px sans-serif">{label}</div>',
         )).add_to(m)
-    for kind, point, text, size in markers:
-        add_marker(m, Marker(point, kind, text, size))
-    fit(m, [p for pts, _, _ in lines for p in pts] + [mk[1] for mk in markers])
+    for pts, color in arrows:
+        add_arrow(m, list(pts), color)
+    for kind, point, text, size, color in markers:
+        add_marker(m, Marker(point, kind, text, size, color))
+    fit(m, [p for pts, _, _ in lines for p in pts] + [p for pts, _ in arrows for p in pts]
+        + [mk[1] for mk in markers])
     return m
 
 
@@ -235,9 +274,13 @@ def location_zones(loc):
     return zones, ids, colors, rows
 
 
+WHO_BORDER = (214, 39, 40)     # the red "who" box on the Film SF slides
+WHERE_BORDER = (120, 120, 128)  # the grey "where" table
+
+
 def location_page(req, loc):
-    """(map lines, markers, table fields, legend) for one location's page, or None if it
-    has no zones."""
+    """(map lines, arrows, markers, info boxes, legend) for one location's page, or None if
+    it has no zones."""
     zones, ids, colors, rows = location_zones(loc)
     if not zones:
         return None
@@ -245,8 +288,9 @@ def location_page(req, loc):
                         loc.windows.get(zid, []), r["Curb"] or "")
             for z, zid, r in zip(zones, ids, rows)]
     drawn = tuple((tuple(z.points), c, str(a.spaces)) for z, c, a in zip(zones, colors, asks))
-    markers = tuple((m.kind, tuple(m.point), m.text, m.size) for m in loc.markers
+    markers = tuple((m.kind, tuple(m.point), m.text, m.size, m.color) for m in loc.markers
                     if m.kind == STAR or m.text.strip())
+    arrows = tuple((tuple(a.points), a.color) for a in loc.arrows)
     # The legend says what each line color was used for on this page.
     legend = {}
     for c, a in zip(colors, asks):
@@ -254,18 +298,23 @@ def location_page(req, loc):
         if a.use not in legend[c]:
             legend[c].append(a.use)
     legend = [(" / ".join(uses), c) for c, uses in legend.items()]
-    # Same order as the Film SF slides: who, where, then the parking ask.
-    fields = {
-        "Production": req.info["Production"],
-        "Contact": loc.info["Contact"],
-        "Phone": loc.info["Phone"],
-        "Email": req.info["Email"],
-        "Film SF permit #": req.info["Film SF permit #"],
-        "Location": loc.info["Location"],
-        "Scene(s)": loc.scenes,
-        **summarize(asks),
-    }
-    return drawn, markers, fields, legend
+    # The boxes from the Film SF slides: who (red), where (grey), then one per line color.
+    summary = summarize(asks)
+    boxes = [
+        Box([("Production", req.info["Production"]), ("Dates & hours", summary["Dates & hours"]),
+             ("Contact", loc.info["Contact"]), ("Phone", loc.info["Phone"]),
+             ("Email", req.info["Email"]), ("Film SF permit #", req.info["Film SF permit #"])],
+            WHO_BORDER, width=1.2),
+        Box([("# of signs", summary["# of signs"]), ("Location", loc.info["Location"]),
+             ("Block #", summary["Block #"]), ("Street side", summary["Street side"]),
+             ("Curb notes", summary["Curb notes"])], WHERE_BORDER),
+    ]
+    groups = by_color(asks, colors)
+    if len(groups) > 1:
+        for c, uses, dates, sides in groups:
+            boxes.append(Box([("Dates & hours", dates), ("Street side", sides)], rgb(c),
+                             f"{COLOR_NAMES.get(c, '')} lines: {' / '.join(uses)}"))
+    return drawn, arrows, markers, boxes, legend
 
 
 def slug(text):
@@ -338,9 +387,12 @@ loc = next(loc for loc in req.locations if loc.id == st.session_state.current)
 map_col, side_col = st.columns([3, 2])
 
 with map_col:
-    color_col, kind_col = st.columns([3, 2])
+    tool_col, color_col, kind_col = st.columns([2, 4, 2])
+    with tool_col:
+        line_kind = st.radio("Line tool draws", ["curb", "arrow"], horizontal=True, key="line_kind",
+                             format_func=lambda k: "━ Curb" if k == "curb" else "➜ Arrow")
     with color_col:
-        color_name = st.radio("Line color", list(LINE_COLORS), horizontal=True, key="line_color",
+        color_name = st.radio("Color", list(LINE_COLORS), horizontal=True, key="line_color",
                               format_func=lambda n: f":{SCREEN_COLORS[n]}[●] {n}")
     with kind_col:
         marker_kind = st.radio("Marker tool adds", MARKER_KINDS, horizontal=True, key="marker_kind",
@@ -350,39 +402,48 @@ with map_col:
 # The map starts from the open location's saved lines and markers. It is only rebuilt when
 # a different location is opened or a tool setting changes (rebuilding resets the view);
 # otherwise what the user draws comes back through all_drawings.
-setup = (gen, loc.id, color, marker_kind)
+setup = (gen, loc.id, line_kind, color, marker_kind)
 if st.session_state.get("map_setup") != setup:
     st.session_state.map_setup = setup
     st.session_state.map_opens = st.session_state.get("map_opens", 0) + 1
-    st.session_state.map_shapes = (list(loc.lines), list(loc.markers))
+    st.session_state.map_shapes = (list(loc.lines), list(loc.arrows), list(loc.markers))
 
 with map_col:
-    st.caption("**Curbs:** pick a color, click the line tool (left side of the map), click along "
-               "the curb, then click the last point again (or **Finish**). A line can turn corners. "
-               "**Stars and text boxes:** pick one above, click the marker tool, then click the map. "
-               "Click any star or text box to write in it, resize it or change it. Use the pencil "
-               "to move things and the trash can to delete them. Search for an address with the "
-               "magnifier (top right).")
-    result = st_folium(drawing_map(*st.session_state.map_shapes, color, marker_kind), height=600,
+    st.caption("**Curbs:** pick **Curb** and a color, click the line tool (left side of the map), "
+               "click along the curb, then click the last point again (or **Finish**). A line can "
+               "turn corners. **Arrows:** pick **Arrow**, then draw from a text box or star to what "
+               "it points at; the head goes at the last point. **Stars and text boxes:** pick one, "
+               "click the marker tool, then click the map. Click a text box to write in it, size it "
+               "or color its border. Use the pencil to move things and the trash can to delete them. "
+               "Search for an address with the magnifier (top right).")
+    result = st_folium(drawing_map(*st.session_state.map_shapes, line_kind, color, marker_kind),
+                       height=600,
                        use_container_width=True, returned_objects=["all_drawings"],
                        key=f"draw-{st.session_state.map_opens}")
 
 drawings = (result or {}).get("all_drawings")
 if drawings is not None:  # None until the user draws, edits or deletes on this map
-    geoms = [d.get("geometry") or {} for d in drawings]
-    loc.lines = merge(loc.lines, [[(lat, lon) for lon, lat in g["coordinates"]]
-                                  for g in geoms if g.get("type") == "LineString"],
-                      lambda line: line.points, lambda line, pts: replace(line, points=pts),
-                      lambda pts: Line(pts, color))
+    def latlon(coords):
+        return [(lat, lon) for lon, lat in coords]
+
+    lines = [d for d in drawings if (d.get("geometry") or {}).get("type") == "LineString"]
     points = [d for d in drawings if (d.get("geometry") or {}).get("type") == "Point"]
-    if all("kind" in (d.get("properties") or {}) for d in points):
-        # The map script keeps each marker's kind, words and size on the marker itself.
-        loc.markers = [Marker((d["geometry"]["coordinates"][1], d["geometry"]["coordinates"][0]),
-                              d["properties"]["kind"], d["properties"].get("text", ""),
-                              d["properties"].get("size", "Medium")) for d in points]
+    if all("kind" in (d.get("properties") or {}) for d in lines + points):
+        # The map script keeps each shape's details on the shape itself (core.map_tools).
+        loc.lines = [Line(latlon(d["geometry"]["coordinates"]), d["properties"].get("color", color))
+                     for d in lines if d["properties"]["kind"] != "arrow"]
+        loc.arrows = [Arrow(latlon(d["geometry"]["coordinates"]), d["properties"].get("color", color))
+                      for d in lines if d["properties"]["kind"] == "arrow"]
+        loc.markers = [Marker(latlon([d["geometry"]["coordinates"]])[0], d["properties"]["kind"],
+                              d["properties"].get("text", ""), text_size(d["properties"].get("size")),
+                              d["properties"].get("color", TEXT_COLOR)) for d in points]
     else:
-        loc.markers = merge(loc.markers, [(d["geometry"]["coordinates"][1], d["geometry"]["coordinates"][0])
-                                          for d in points],
+        # Shapes without details (shouldn't happen with the map script loaded): keep what
+        # we knew about them by matching positions.
+        loc.lines = merge(loc.lines, [latlon(d["geometry"]["coordinates"]) for d in lines],
+                          lambda line: line.points, lambda line, pts: replace(line, points=pts),
+                          lambda pts: Line(pts, color))
+        loc.markers = merge(loc.markers, [latlon([d["geometry"]["coordinates"]])[0] for d in points],
                             lambda mk: mk.point, lambda mk, pt: replace(mk, point=pt),
                             lambda pt: Marker(pt, marker_kind))
 zones, ids, colors, base_rows = location_zones(loc)
@@ -433,10 +494,11 @@ with side_col:
 
 if loc.markers:
     st.subheader("Stars & text boxes")
-    st.caption("Numbered as on the map. Click one on the map to write in it, resize it or change "
-               "it. Empty text boxes are left off the PDF.")
+    st.caption("Numbered as on the map. Click a text box on the map to write in it, size it or "
+               "color its border. Empty text boxes are left off the PDF.")
     st.dataframe([{"#": i, "Kind": m.kind, "Words": m.text if m.kind != STAR else "",
-                   "Size": m.size if m.kind != STAR else ""}
+                   "Size": f"{m.size}px" if m.kind != STAR else "",
+                   "Border": COLOR_NAMES.get(m.color, "Black") if m.kind != STAR else ""}
                   for i, m in enumerate(loc.markers, start=1)],
                  hide_index=True, use_container_width=True)
 
@@ -498,38 +560,48 @@ if zones:
             loc.windows[ids[labels.index(row["Zone"])]].append(
                 Window(as_date(row.get("Date")), as_time(row.get("Start")), as_time(row.get("End"))))
 
-    drawn, markers, fields, legend = location_page(req, loc)
+    drawn, arrows, markers, boxes, legend = location_page(req, loc)
     st.divider()
     map_col2, list_col = st.columns([3, 2])
     with map_col2:
-        st_folium(zones_map(drawn, markers), height=450, use_container_width=True,
+        st_folium(zones_map(drawn, arrows, markers), height=450, use_container_width=True,
                   returned_objects=[], key="reviewed")
         st.caption(" · ".join(f":{SCREEN_COLORS[COLOR_NAMES.get(c, 'Black')]}[■] {label}"
                               for label, c in legend))
     with list_col:
         st.markdown("#### This location's page")
-        for name, value in fields.items():
-            if not value:
-                continue
-            if isinstance(value, list):
-                st.markdown(f"**{name}:**" + "".join(f"\n- {v}" for v in value))
-            else:
-                st.markdown(f"**{name}:** {value}")
+        if loc.scenes:
+            st.markdown("**Scene(s):** " + " · ".join(loc.scenes))
+        for box in boxes:
+            with st.container(border=True):
+                if box.title:
+                    st.markdown(f"**{box.title}**")
+                for name, value in box.rows:
+                    if not value:
+                        continue
+                    if isinstance(value, list):
+                        st.markdown(f"**{name}:**" + "".join(f"\n- {v}" for v in value))
+                    else:
+                        st.markdown(f"**{name}:** {value}")
 
 # The whole request: one PDF page per location that has zones.
 st.divider()
 pages = [(loc_, page) for loc_ in req.locations if (page := location_page(req, loc_))]
 project = req.info["Project"]
 if pages:
-    st.write(f"**PDF:** {len(pages)} page{'s' if len(pages) != 1 else ''}, one per location: "
+    pdf = build_pdf([Page(pdf_map(drawn_, arrows_, markers_), boxes_, loc_.scenes, loc_.notes,
+                          [(label, rgb(c)) for label, c in legend_])
+                     for loc_, (drawn_, arrows_, markers_, boxes_, legend_) in pages], project=project)
+    st.subheader("PDF")
+    st.write(f"{len(pages)} page{'s' if len(pages) != 1 else ''}, one per location: "
              + ", ".join(loc_.title for loc_, _ in pages))
     st.download_button(
-        "Download PDF", type="primary", mime="application/pdf",
+        "Download PDF", type="primary", mime="application/pdf", data=pdf,
         file_name=f"{slug(project) or 'sf-parking-request'}-{date.today():%Y-%m-%d}.pdf",
-        data=build_pdf([Page(pdf_map(drawn_, markers_), fields_, loc_.notes,
-                             [(label, rgb(c)) for label, c in legend_])
-                        for loc_, (drawn_, markers_, fields_, legend_) in pages], [], project=project),
     )
+    with st.expander("Preview every page before downloading"):
+        for n, (image, (loc_, _)) in enumerate(zip(pdf_pages(pdf), pages), start=1):
+            st.image(image, caption=f"Page {n} · {loc_.title}", use_container_width=True)
 else:
     st.write("Draw curb lines at a location to build the PDF.")
 

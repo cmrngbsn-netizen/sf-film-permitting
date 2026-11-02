@@ -4,7 +4,7 @@ from datetime import date, time
 
 import pytest
 
-from core.request import STAR, TEXT, Line, Marker, Request, format_phone
+from core.request import STAR, TEXT, Arrow, Line, Marker, Request, format_phone, text_size
 from core.summary import Window
 
 
@@ -17,7 +17,8 @@ def sample():
     first.scenes = ["INT City Hall - SHOOT", "EXT Polk St - PREP"]
     first.notes = "Crew parking on Grove"
     first.lines = [Line([(37.7806, -122.4180), (37.7807, -122.4170)], "#1f77b4")]
-    first.markers = [Marker((37.7795, -122.4189), STAR), Marker((37.7801, -122.4175), TEXT, "INT City Hall", "Large")]
+    first.markers = [Marker((37.7795, -122.4189), STAR), Marker((37.7801, -122.4175), TEXT, "INT City Hall", 22, "#2ca02c")]
+    first.arrows = [Arrow([(37.7801, -122.4175), (37.7806, -122.4178)], "#2ca02c")]
     first.auto_name = False
     first.zones = {"123:1:4": {"Curb": "6 meters (6 general)", "Meters": "Metered", "Spaces": 8,
                                "Use": "Working vehicles"}}
@@ -34,6 +35,7 @@ def test_round_trip_keeps_everything():
     assert [loc.info for loc in back.locations] == [loc.info for loc in req.locations]
     assert back.locations[0].lines == req.locations[0].lines
     assert back.locations[0].markers == req.locations[0].markers
+    assert back.locations[0].arrows == req.locations[0].arrows
     assert back.locations[0].auto_name is False and back.locations[1].auto_name is True
     assert back.locations[0].zones == req.locations[0].zones
     assert back.locations[0].windows == req.locations[0].windows
@@ -85,4 +87,11 @@ def test_opens_version_2_scene_field():
           '"markers": [{"point": [37.78, -122.42], "kind": "Text box", "text": "PICTURE"}]}]}')
     loc = Request.from_json(v2).locations[0]
     assert loc.scenes == ["INT City Hall - SHOOT"]
-    assert loc.markers[0].size == "Medium"
+    assert loc.markers[0].size == 14 and loc.markers[0].color == "#2b2b2b"
+    assert loc.arrows == []
+
+
+def test_text_size():
+    assert text_size("Large") == 18 and text_size("X-Large") == 24
+    assert text_size(20) == 20 and text_size(99) == 36 and text_size(2) == 10
+    assert text_size(None) == 14

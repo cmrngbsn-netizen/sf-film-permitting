@@ -1,5 +1,5 @@
 """A whole parking request: shared shoot info plus one or more locations, each with its
-drawn curb lines, map markers (stars and text boxes), per-zone edits and time windows.
+drawn curb lines, arrows, map markers (stars and text boxes), per-zone edits and time windows.
 Saved and reopened as JSON."""
 
 import json
@@ -10,7 +10,9 @@ from datetime import date, time
 
 from core.summary import Window
 
-FORMAT_VERSION = 3  # 2: lines carry a color, locations have markers; 3: scene list, marker size
+FORMAT_VERSION = 4
+# 2: lines carry a color, locations have markers; 3: scene list, marker size;
+# 4: arrows, text box size in pixels and a border color
 
 # Line colors to draw with. The first is the default; a blue line starts as "Picture".
 LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
@@ -18,7 +20,10 @@ LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
 DEFAULT_COLOR = LINE_COLORS["Red"]
 STAR, TEXT = "Star", "Text box"
 MARKER_KINDS = [STAR, TEXT]
-TEXT_SIZES = ["Small", "Medium", "Large", "X-Large"]
+TEXT_COLOR = "#2b2b2b"  # default text box border, a soft black
+TEXT_PX = {"min": 10, "max": 36, "default": 14}  # text box font size on screen, in pixels
+# Version 3 named the sizes.
+NAMED_SIZES = {"Small": 11, "Medium": 14, "Large": 18, "X-Large": 24}
 
 # Shared by every page of the request.
 REQUEST_FIELDS = ["Production", "Project", "Email", "Film SF permit #"]
@@ -49,11 +54,18 @@ class Line:
 
 
 @dataclass
+class Arrow:
+    points: list  # [(lat, lon), ...]; the head is at the last point
+    color: str = DEFAULT_COLOR
+
+
+@dataclass
 class Marker:
     point: tuple  # (lat, lon)
     kind: str = STAR
     text: str = ""
-    size: str = "Medium"  # text box size, one of TEXT_SIZES
+    size: int = TEXT_PX["default"]  # text box font size on screen, in pixels
+    color: str = TEXT_COLOR         # text box border
 
 
 @dataclass
@@ -62,7 +74,8 @@ class Location:
     info: dict = field(default_factory=lambda: {name: "" for name in LOCATION_FIELDS})
     notes: str = ""
     scenes: list = field(default_factory=list)   # ["INT City Hall - SHOOT", ...]
-    lines: list = field(default_factory=list)    # [Line, ...]
+    lines: list = field(default_factory=list)    # [Line, ...] curb lines
+    arrows: list = field(default_factory=list)   # [Arrow, ...]
     markers: list = field(default_factory=list)  # [Marker, ...]
     zones: dict = field(default_factory=dict)    # zone id -> edited row (Curb, Meters, Spaces, Use)
     windows: dict = field(default_factory=dict)  # zone id -> [Window, ...]
@@ -103,8 +116,10 @@ class Request:
                 "scenes": loc.scenes,
                 "lines": [{"points": [[lat, lon] for lat, lon in line.points], "color": line.color}
                           for line in loc.lines],
-                "markers": [{"point": list(m.point), "kind": m.kind, "text": m.text, "size": m.size}
-                            for m in loc.markers],
+                "arrows": [{"points": [[lat, lon] for lat, lon in a.points], "color": a.color}
+                           for a in loc.arrows],
+                "markers": [{"point": list(m.point), "kind": m.kind, "text": m.text, "size": m.size,
+                             "color": m.color} for m in loc.markers],
                 "auto_name": loc.auto_name,
                 "zones": loc.zones,
                 "windows": {zid: [_window_out(w) for w in ws] for zid, ws in loc.windows.items()},
@@ -125,8 +140,10 @@ class Request:
             # Version 2 had one Scene text field.
             scenes=raw.get("scenes") or ([raw["info"]["Scene"]] if raw.get("info", {}).get("Scene") else []),
             lines=[_line_in(line) for line in raw.get("lines", [])],
+            arrows=[Arrow([(lat, lon) for lat, lon in a["points"]], a.get("color", DEFAULT_COLOR))
+                    for a in raw.get("arrows", [])],
             markers=[Marker(tuple(m["point"]), m.get("kind", STAR), m.get("text", ""),
-                            m.get("size", "Medium"))
+                            text_size(m.get("size")), m.get("color", TEXT_COLOR))
                      for m in raw.get("markers", [])],
             auto_name=raw.get("auto_name", not raw.get("info", {}).get("Location")),
             zones=raw.get("zones", {}),
@@ -134,6 +151,15 @@ class Request:
         ) for raw in data.get("locations", [])]
         info = {name: data.get("info", {}).get(name, "") for name in REQUEST_FIELDS}
         return cls(info=info, locations=locations or [Location()])
+
+
+def text_size(value):
+    """A text box size in pixels, from a saved number or a version 3 name ("Large")."""
+    if isinstance(value, str):
+        return NAMED_SIZES.get(value, TEXT_PX["default"])
+    if isinstance(value, (int, float)):
+        return int(min(max(value, TEXT_PX["min"]), TEXT_PX["max"]))
+    return TEXT_PX["default"]
 
 
 def _line_in(raw):

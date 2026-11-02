@@ -2,7 +2,7 @@
 
 from datetime import date, time
 
-from core.summary import Window, ZoneRequest, dates_and_hours, street_side, summarize
+from core.summary import PICTURE, Window, ZoneRequest, by_color, dates_and_hours, street_side, summarize
 
 
 def test_street_side_matches_film_sf_wording():
@@ -56,3 +56,15 @@ def test_curb_notes():
     z = ZoneRequest("800-890 Grant Ave", "west", 12, curb="12 meters (7 general, 5 yellow (commercial loading))")
     assert summarize([z])["Curb notes"] == [
         "800-890 Grant Ave, west side: 12 meters (7 general, 5 yellow (commercial loading))"]
+
+
+def test_by_color_groups_zones_like_the_slides():
+    wed = [Window(date(2026, 11, 4), time(7), time(22))]
+    zones = [ZoneRequest("800-890 Grant Ave", "west", 12, windows=wed),
+             ZoneRequest("800-890 Washington St", "south", 4, use=PICTURE, windows=wed),
+             ZoneRequest("700-790 Clay St", "north", 6, windows=wed)]
+    groups = by_color(zones, ["#d62728", "#1f77b4", "#d62728"])
+    assert [(c, uses) for c, uses, _, _ in groups] == [("#d62728", ["Working vehicles"]),
+                                                       ("#1f77b4", ["Picture"])]
+    assert groups[0][2] == ["WE, 11/04/26 7:00 AM - 10:00 PM"]
+    assert groups[0][3] == ["12 spaces on west side 800-890 Grant Ave", "6 spaces on north side 700-790 Clay St"]

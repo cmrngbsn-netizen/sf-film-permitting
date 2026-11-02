@@ -78,3 +78,16 @@ def summarize(zones):
         "Dates & hours": dates,
         "Curb notes": [f"{z.block}, {z.side} side: {z.curb}" for z in zones if z.curb],
     }
+
+
+def by_color(zones, colors):
+    """Zones grouped by line color, for the color-matched boxes on the Film SF slides:
+    [(color, uses, dates & hours lines, street side lines), ...] in first-drawn order."""
+    groups = {}
+    for z, c in zip(zones, colors):
+        groups.setdefault(c, []).append(z)
+    out = []
+    for c, group in groups.items():
+        s = summarize(group)
+        out.append((c, unique(z.use for z in group), s["Dates & hours"], s["Street side"]))
+    return out
