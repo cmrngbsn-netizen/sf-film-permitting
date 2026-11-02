@@ -6,6 +6,7 @@ then exported as a one-page parking request PDF.
 Run locally with: streamlit run app.py
 """
 
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -14,11 +15,26 @@ import streamlit as st
 from folium.plugins import Draw
 from streamlit_folium import st_folium
 
-from core.curbdata import CurbData
-from core.curbs import CurbZoner
-from core.pdf import build_pdf, render_map
-from core.streets import StreetIndex
-from core.summary import METERS, PICTURE, USES, WORKING, ZoneRequest, summarize
+
+def code_version():
+    """Changes whenever the street code or data changes."""
+    root = Path(__file__).parent
+    files = [*root.glob("core/*.py"), *root.glob("data/*")]
+    return max(f.stat().st_mtime for f in files)
+
+
+# Streamlit Cloud reruns app.py after a push but keeps the old core/ modules loaded.
+# When core/ or data/ changed, drop them so the imports below load the new code.
+if getattr(sys, "_sf_core_version", None) != code_version():
+    for name in [m for m in sys.modules if m == "core" or m.startswith("core.")]:
+        del sys.modules[name]
+    sys._sf_core_version = code_version()
+
+from core.curbdata import CurbData  # noqa: E402
+from core.curbs import CurbZoner  # noqa: E402
+from core.pdf import build_pdf, render_map  # noqa: E402
+from core.streets import StreetIndex  # noqa: E402
+from core.summary import METERS, PICTURE, USES, WORKING, ZoneRequest, summarize  # noqa: E402
 
 SF_CENTER = [37.7749, -122.4194]
 SF_BOUNDS = [[37.70, -122.53], [37.84, -122.35]]  # keeps the map panned to the city
@@ -28,14 +44,7 @@ st.set_page_config(page_title="SF Film Parking Request", layout="wide")
 st.title("SF Film Parking Request")
 
 
-def code_version():
-    """Changes whenever the street code or data changes, so cached objects get rebuilt
-    after an update instead of mixing old objects with new code."""
-    root = Path(__file__).parent
-    files = [*root.glob("core/*.py"), *root.glob("data/*")]
-    return max(f.stat().st_mtime for f in files)
-
-
+# Cached street objects are keyed on code_version() too, so they're rebuilt with the new code.
 @st.cache_resource
 def _zoner(version):
     return CurbZoner(StreetIndex())
