@@ -1,5 +1,6 @@
 """Saving and reopening a request."""
 
+import json
 from datetime import date, time
 
 import pytest
@@ -22,7 +23,8 @@ def sample():
     first.auto_name = False
     first.zones = {"123:1:4": {"Curb": "6 meters (6 general)", "Meters": "Metered", "Spaces": 8,
                                "Use": "Working vehicles"}}
-    first.windows = {"123:1:4": [Window(date(2026, 11, 2), time(7), time(23, 59)), Window()]}
+    first.dates = [Window(date(2026, 11, 2), time(7), time(23, 59))]
+    first.windows = {"123:1:4": [Window(date(2026, 11, 3), time(6), time(20)), Window()]}
     second = req.add_location()
     second.info["Location"] = "800 Block of Grant"
     return req
@@ -39,6 +41,7 @@ def test_round_trip_keeps_everything():
     assert back.locations[0].auto_name is False and back.locations[1].auto_name is True
     assert back.locations[0].zones == req.locations[0].zones
     assert back.locations[0].windows == req.locations[0].windows
+    assert back.locations[0].dates == req.locations[0].dates
     assert back.locations[0].notes == "Crew parking on Grove"
     assert back.locations[0].scenes == ["INT City Hall - SHOOT", "EXT Polk St - PREP"]
     assert [loc.id for loc in back.locations] == [loc.id for loc in req.locations]
@@ -95,3 +98,21 @@ def test_text_size():
     assert text_size("Large") == 18 and text_size("X-Large") == 24
     assert text_size(20) == 20 and text_size(99) == 36 and text_size(2) == 10
     assert text_size(None) == 14
+
+
+def test_location_dates_apply_unless_a_zone_has_its_own():
+    loc = Request().locations[0]
+    loc.dates = [Window(date(2026, 11, 4), time(7), time(22))]
+    loc.windows = {"b": [Window(date(2026, 11, 5), time(6), time(14))]}
+    assert loc.windows_for("a") == loc.dates
+    assert loc.windows_for("b")[0].date == date(2026, 11, 5)
+
+
+def test_version_4_matching_zone_times_become_location_dates():
+    day = {"date": "2026-11-04", "start": "07:00", "end": "22:00"}
+    v4 = ('{"format": "sf-film-parking-request", "version": 4, "locations": [{"id": "a1", '
+          '"windows": {"z1": [D], "z2": [D]}}, {"id": "a2", "windows": {"z1": [D], "z2": [E]}}]}')
+    v4 = v4.replace("D", json.dumps(day)).replace("E", json.dumps({**day, "end": "23:00"}))
+    same, different = Request.from_json(v4).locations
+    assert same.dates == [Window(date(2026, 11, 4), time(7), time(22))] and same.windows == {}
+    assert len(different.windows) == 2 and different.dates == [Window()]

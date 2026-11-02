@@ -174,6 +174,13 @@ def as_time(v):
     return time.fromisoformat(v) if isinstance(v, str) else v
 
 
+def window_columns(compact=False):
+    """Date, Start and End columns for a dates-and-hours table."""
+    return {"Date": st.column_config.DateColumn(format="MM/DD/YY" if compact else "ddd MM/DD/YY"),
+            "Start": st.column_config.TimeColumn(format="h:mm a", step=900),
+            "End": st.column_config.TimeColumn(format="h:mm a", step=900)}
+
+
 def zone_id(z):
     """Stable name for a zone, so edits survive drawing more lines."""
     return f"{z.cnn}:{z.side_sign}:{round(z.along_m[0] / 5)}"
@@ -227,7 +234,7 @@ def location_page(req, loc):
     if not zones:
         return None
     asks = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"],
-                        loc.windows.get(zid, []), r["Curb"] or "")
+                        loc.windows_for(zid), r["Curb"] or "")
             for z, zid, r in zip(zones, ids, rows)]
     drawn = tuple((tuple(z.points), c, str(a.spaces)) for z, c, a in zip(zones, colors, asks))
     markers = tuple((m.kind, tuple(m.point), m.text, m.size, m.color) for m in loc.markers
@@ -350,7 +357,7 @@ def add_planned(planned, text):
     """Adds CSV-planned curb lines to the request: rows with the same Location go to one
     location (an existing one with that name, the open one if it's still empty, or a new
     one), each with its use and time windows set on the zones it makes."""
-    targets, first = {}, None
+    targets, first, timed = {}, None, {}  # timed: location id -> {zone id: windows from the rows}
     for p in planned:
         name = p.location
         loc_ = targets.get(name.lower())
@@ -371,8 +378,17 @@ def add_planned(planned, text):
                 zid = zone_id(z)
                 loc_.zones.setdefault(zid, {})["Use"] = p.use
                 if p.windows:
-                    kept = [w for w in loc_.windows.get(zid, []) if w.date or w.start or w.end]
-                    loc_.windows[zid] = kept + p.windows
+                    timed.setdefault(loc_.id, {}).setdefault(zid, []).extend(p.windows)
+    # Times shared by every imported zone become the location's dates (if it has none yet);
+    # otherwise each zone keeps its own.
+    for loc_ in targets.values():
+        zone_times = timed.get(loc_.id, {})
+        schedules = list(zone_times.values())
+        unset = not any(w.date or w.start or w.end for w in loc_.dates)
+        if schedules and unset and all(ws == schedules[0] for ws in schedules):
+            loc_.dates = schedules[0]
+        else:
+            loc_.windows.update(zone_times)
     # Start every widget fresh from the request, as when a file is opened.
     st.session_state.current = first.id
     st.session_state.gen += 1
@@ -510,6 +526,16 @@ def locations_step():
         bound_text("Contact", loc.info, "Contact", f"g{gen}-{loc.id}-Contact")
         bound_text("Phone", loc.info, "Phone", f"g{gen}-{loc.id}-Phone", placeholder="(415) 555-0100",
                    formatter=format_phone)
+        st.markdown("**Dates & hours**", help="For every zone at this location. Add a row for each "
+                    "day. To give one zone different times, tick Own times in the zones table. An "
+                    "end time earlier than the start means the next day.")
+        dates_key = f"dates-g{gen}-{loc.id}"
+        picked = st.data_editor(
+            snapshot(dates_key, lambda: [{"Date": w.date, "Start": w.start, "End": w.end} for w in loc.dates]),
+            key=dates_key, hide_index=True, use_container_width=True, num_rows="dynamic",
+            column_config=window_columns(compact=True))
+        loc.dates = [Window(as_date(r.get("Date")), as_time(r.get("Start")), as_time(r.get("End")))
+                     for r in picked] or [Window()]
         with st.expander("Scenes and notes", expanded=bool(loc.scenes or loc.notes)):
             scenes = {"text": "\n".join(loc.scenes)}
             bound_text("Scene(s)", scenes, "text", f"g{gen}-{loc.id}-scenes", area=True, height=80,
@@ -536,49 +562,53 @@ def locations_step():
 
         def zone_rows():
             return [{"Zone": i, "Block": z.block, "Side": z.side, "Between": z.between,
-                     "Length (ft)": round(z.length_ft), **row}
-                    for i, (z, row) in enumerate(zip(zones, base_rows), start=1)]
+                     "Length (ft)": round(z.length_ft), **row, "Own times": zid in loc.windows}
+                    for i, (z, zid, row) in enumerate(zip(zones, ids, base_rows), start=1)]
 
         edited = st.data_editor(
             snapshot(f"zones-{zones_key}", zone_rows), key=f"zones-{zones_key}", hide_index=True,
             use_container_width=True,
-            column_order=["Zone", "Block", "Side", "Between", "Length (ft)", "Curb", "Meters",
-                          "Spaces", "Use"],
+            # What gets edited first; the long reference text from the city last.
+            column_order=["Zone", "Block", "Side", "Spaces", "Use", "Own times", "Meters", "Curb",
+                          "Between", "Length (ft)"],
             disabled=["Zone", "Block", "Side", "Between", "Length (ft)"],
             column_config={
                 "Curb": st.column_config.TextColumn(width="large"),
                 "Spaces": st.column_config.NumberColumn(min_value=1, step=1),
                 "Use": st.column_config.SelectboxColumn(options=USES, required=True),
                 "Meters": st.column_config.SelectboxColumn(options=METERS, required=True),
+                "Own times": st.column_config.CheckboxColumn(
+                    help="Give this zone its own dates and hours instead of the location's."),
             },
         )
+        # Zones that no longer exist (a line was moved or erased) drop their own times.
+        loc.windows = {zid: ws for zid, ws in loc.windows.items() if zid in ids}
         for zid, row in zip(ids, edited):
             loc.zones[zid] = {k: row[k] for k in ("Curb", "Meters", "Spaces", "Use")}
+            if row["Own times"] and zid not in loc.windows:
+                loc.windows[zid] = list(loc.dates)  # start from the location's times
+            elif not row["Own times"]:
+                loc.windows.pop(zid, None)
 
-        st.subheader("Dates & hours", help="One row per zone to start. Add a row and pick its zone to "
-                     "book a zone for another day or time. An end time earlier than the start means "
-                     "the next day.")
-
-        def schedule_rows():
-            return [{"Zone": label, "Date": w.date, "Start": w.start, "End": w.end}
-                    for label, zid in zip(labels, ids) for w in loc.windows.get(zid) or [Window()]]
-
-        schedule = st.data_editor(
-            snapshot(f"schedule-{zones_key}", schedule_rows), key=f"schedule-{zones_key}",
-            hide_index=True, use_container_width=True, num_rows="dynamic",
-            column_config={
-                "Zone": st.column_config.SelectboxColumn(options=labels, required=True, width="large"),
-                "Date": st.column_config.DateColumn(format="ddd MM/DD/YY"),
-                "Start": st.column_config.TimeColumn(format="h:mm A", step=900),
-                "End": st.column_config.TimeColumn(format="h:mm A", step=900),
-            },
-        )
-        for zid in ids:
-            loc.windows[zid] = []
-        for row in schedule:
-            if row.get("Zone") in labels:
-                loc.windows[ids[labels.index(row["Zone"])]].append(
-                    Window(as_date(row.get("Date")), as_time(row.get("Start")), as_time(row.get("End"))))
+        own = [i for i, zid in enumerate(ids) if zid in loc.windows]
+        if own:
+            own_labels = [labels[i] for i in own]
+            st.markdown("**Zones with their own dates & hours**", help="Add a row and pick its zone "
+                        "to book that zone for another day or time.")
+            own_key = f"own-{zones_key}-{hash(tuple(ids[i] for i in own))}"
+            rows = st.data_editor(
+                snapshot(own_key, lambda: [{"Zone": labels[i], "Date": w.date, "Start": w.start, "End": w.end}
+                                           for i in own for w in loc.windows[ids[i]] or [Window()]]),
+                key=own_key, hide_index=True, use_container_width=True, num_rows="dynamic",
+                column_config={"Zone": st.column_config.SelectboxColumn(options=own_labels, required=True,
+                                                                        width="large"),
+                               **window_columns()})
+            times = {ids[i]: [] for i in own}
+            for row in rows:
+                if row.get("Zone") in own_labels:
+                    times[ids[labels.index(row["Zone"])]].append(
+                        Window(as_date(row.get("Date")), as_time(row.get("Start")), as_time(row.get("End"))))
+            loc.windows.update(times)
 
     st.button("Next: review and PDF", type="primary", on_click=go, args=(2,))
 

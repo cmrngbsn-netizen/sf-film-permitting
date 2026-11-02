@@ -10,9 +10,10 @@ from datetime import date, time
 
 from core.summary import Window
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 # 2: lines carry a color, locations have markers; 3: scene list, marker size;
-# 4: arrows, text box size in pixels and a border color
+# 4: arrows, text box size in pixels and a border color; 5: dates and hours per location,
+# with per-zone windows only for zones that differ
 
 # Line colors to draw with. The first is the default; a blue line starts as "Picture".
 LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
@@ -79,13 +80,19 @@ class Location:
     arrows: list = field(default_factory=list)   # [Arrow, ...]
     markers: list = field(default_factory=list)  # [Marker, ...]
     zones: dict = field(default_factory=dict)    # zone id -> edited row (Curb, Meters, Spaces, Use)
-    windows: dict = field(default_factory=dict)  # zone id -> [Window, ...]
+    # Dates and hours for every zone here, unless a zone has its own in `windows`.
+    dates: list = field(default_factory=lambda: [Window()])
+    windows: dict = field(default_factory=dict)  # zone id -> [Window, ...], zones with their own times
     # The Location name is filled in from the drawn lines until the user types their own.
     auto_name: bool = True
 
     @property
     def title(self):
         return self.info.get("Location") or "Untitled location"
+
+    def windows_for(self, zone_id):
+        """A zone's dates and hours: its own if it has them, else the location's."""
+        return self.windows[zone_id] if zone_id in self.windows else self.dates
 
 
 @dataclass
@@ -123,6 +130,7 @@ class Request:
                              "color": m.color} for m in loc.markers],
                 "auto_name": loc.auto_name,
                 "zones": loc.zones,
+                "dates": [_window_out(w) for w in loc.dates],
                 "windows": {zid: [_window_out(w) for w in ws] for zid, ws in loc.windows.items()},
             } for loc in self.locations],
         }, indent=1)
@@ -148,7 +156,7 @@ class Request:
                      for m in raw.get("markers", [])],
             auto_name=raw.get("auto_name", not raw.get("info", {}).get("Location")),
             zones=raw.get("zones", {}),
-            windows={zid: [_window_in(w) for w in ws] for zid, ws in raw.get("windows", {}).items()},
+            **_dates_in(raw),
         ) for raw in data.get("locations", [])]
         info = {name: data.get("info", {}).get(name, "") for name in REQUEST_FIELDS}
         return cls(info=info, locations=locations or [Location()])
@@ -174,6 +182,19 @@ def _window_out(w):
     return {"date": w.date.isoformat() if w.date else None,
             "start": w.start.strftime("%H:%M") if w.start else None,
             "end": w.end.strftime("%H:%M") if w.end else None}
+
+
+def _dates_in(raw):
+    """A saved location's dates: version 5 has location dates plus per-zone exceptions.
+    Before that every zone had its own; when they all match, they become the location's."""
+    windows = {zid: [_window_in(w) for w in ws] for zid, ws in raw.get("windows", {}).items()}
+    if "dates" in raw:
+        return {"dates": [_window_in(w) for w in raw["dates"]] or [Window()], "windows": windows}
+    filled = {zid: ws for zid, ws in windows.items() if any(w.date or w.start or w.end for w in ws)}
+    schedules = list(filled.values())
+    if schedules and len(filled) == len(windows) and all(ws == schedules[0] for ws in schedules):
+        return {"dates": schedules[0], "windows": {}}
+    return {"dates": [Window()], "windows": filled}
 
 
 def _window_in(raw):
