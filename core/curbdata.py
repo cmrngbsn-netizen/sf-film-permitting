@@ -29,7 +29,7 @@ NON_CAR_METERS = {"Black"}
 
 # SFMTA color curb zone types, shortened for the table.
 CURB_TYPES = {
-    "Driveway Red Zone": "driveway",
+    "Driveway Red Zone": "red-curb driveway",  # only driveways painted red are mapped
     "Blue Zone/Disabled Parking": "blue zone (disabled)",
     "White Zone/Passenger Loading": "white zone (passenger loading)",
     "Yellow Zone/Commercial Loading": "yellow zone (commercial loading)",
@@ -58,6 +58,8 @@ def plural(kind, n):
 class CurbInfo:
     meters: Counter = field(default_factory=Counter)  # cap color -> count
     zones: list = field(default_factory=list)         # [(curb type, feet), ...]
+    census: float = None   # legal spaces on this stretch per the SFMTA parking census
+    census_year: int = 0
 
     @property
     def car_meters(self):
@@ -68,10 +70,14 @@ class CurbInfo:
         return self.car_meters > 0
 
     def suggested_spaces(self, length_ft):
-        """Metered curb: one space per meter. Otherwise 20 ft per space, minus driveways."""
+        """Metered curb: one space per meter. Otherwise the parking census, which counts
+        around every driveway; failing that, 20 ft per space minus red-curb driveways
+        (the only driveways SFMTA maps)."""
         if self.metered:
             return self.car_meters
-        driveway_ft = sum(ft for kind, ft in self.zones if kind == "driveway")
+        if self.census is not None:
+            return max(1, round(self.census))
+        driveway_ft = sum(ft for kind, ft in self.zones if kind == "red-curb driveway")
         return max(1, round((length_ft - driveway_ft) / SPACE_FT))
 
     def describe(self):
@@ -88,6 +94,9 @@ class CurbInfo:
             feet[kind] += ft
         for kind, n in by_kind.most_common():
             parts.append(f"{n} {plural(kind, n)}" + (f" ({feet[kind]} ft)" if feet[kind] else ""))
+        if not self.metered and self.census is not None:
+            parts.append(f"about {round(self.census)} legal spaces per SFMTA parking census "
+                         f"({self.census_year})")
         return "; ".join(parts) if parts else "no meters or color curbs on record"
 
 
@@ -96,6 +105,7 @@ class CurbData:
         data = json.loads((data_dir / "curbs.json").read_text())
         self.built = data["built"]
         self.blocks = data["blocks"]
+        self.census = data.get("census", {})  # cnn -> [legal spaces, both sides; year]
 
     def lookup(self, zone):
         info = CurbInfo()
@@ -108,4 +118,8 @@ class CurbData:
                 info.meters[name] += 1
             else:
                 info.zones.append((CURB_TYPES.get(name, name.lower()), feet))
+        # The census counts both sides of the whole block; this zone gets its share.
+        if str(zone.cnn) in self.census and zone.block_ft > 0:
+            spaces, info.census_year = self.census[str(zone.cnn)]
+            info.census = spaces * min(1.0, zone.length_ft / (2 * zone.block_ft))
         return info

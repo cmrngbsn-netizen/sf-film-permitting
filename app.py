@@ -37,6 +37,7 @@ if getattr(sys, "_sf_core_version", None) != code_version():
 
 from core.basemaps import DEFAULT as BASEMAP  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
+from core.bulk import EXAMPLE as CSV_EXAMPLE, StreetRoutes, plan  # noqa: E402
 from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
 from core.drawings import merge  # noqa: E402
 from core.map_tools import ArrowHeads, MapTools  # noqa: E402
@@ -46,7 +47,7 @@ from core.request import (DEFAULT_COLOR, LINE_COLORS, LOCATION_FIELDS, REQUEST_F
                           format_phone, text_size)
 from core.streets import StreetIndex  # noqa: E402
 from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest, by_color,  # noqa: E402
-                          summarize)
+                          dates_and_hours, summarize)
 
 SF_CENTER = [37.7749, -122.4194]
 SF_BOUNDS = [[37.70, -122.53], [37.84, -122.35]]  # keeps the map panned to the city
@@ -72,6 +73,15 @@ def _curb_data(version):
 
 def zoner():
     return _zoner(code_version())
+
+
+@st.cache_resource
+def _routes(version):
+    return StreetRoutes(zoner().index)
+
+
+def routes():
+    return _routes(code_version())
 
 
 def curb_data():
@@ -363,6 +373,72 @@ with buttons[-1]:
         st.write("Remove the open location and its lines?")
         st.button("Yes, remove it", on_click=remove_location, type="primary")
 
+
+def add_planned(planned, text):
+    """Adds CSV-planned curb lines to the request: rows with the same Location go to one
+    location (an existing one with that name, the open one if it's still empty, or a new
+    one), each with its use and time windows set on the zones it makes."""
+    targets, first = {}, None
+    for p in planned:
+        name = p.location
+        loc_ = targets.get(name.lower())
+        if loc_ is None:
+            loc_ = next((x for x in req.locations if name and x.info["Location"].lower() == name.lower()), None)
+        if loc_ is None:
+            current = next(x for x in req.locations if x.id == st.session_state.current)
+            empty = not (current.lines or current.arrows or current.markers)
+            loc_ = current if empty and current not in targets.values() else req.add_location()
+        if name:
+            loc_.info["Location"], loc_.auto_name = name, False
+        targets[name.lower()] = loc_
+        first = first or loc_
+        color = LINE_COLORS["Blue"] if p.use == PICTURE else DEFAULT_COLOR
+        for pts in p.lines:
+            loc_.lines.append(Line(pts, color))
+            for z in zoner().zones(pts):
+                zid = zone_id(z)
+                loc_.zones.setdefault(zid, {})["Use"] = p.use
+                if p.windows:
+                    kept = [w for w in loc_.windows.get(zid, []) if w.date or w.start or w.end]
+                    loc_.windows[zid] = kept + p.windows
+    # Start every widget fresh from the request, as when a file is opened.
+    st.session_state.current = first.id
+    st.session_state.gen += 1
+    st.session_state.snapshots = {}
+    st.session_state.csv_done = text
+    st.session_state.csv_added = (f"Added {len(planned)} curb{'s' if len(planned) != 1 else ''} to "
+                                  + ", ".join(x.title for x in targets.values()) + ".")
+
+
+with st.expander("Add many curb zones at once (CSV)"):
+    st.caption("One row per curb: the **Street**, the cross streets it runs **From** and **To** "
+               "(it can cover several blocks), and the curb **Side** (north, south, east, west or "
+               "both). **Location** groups rows onto one PDF page. **Use**, **Date**, **Start** "
+               "and **End** are optional. Repeat a row with another date to book the same curb "
+               "on more days. Paste from a spreadsheet as comma-separated text, or upload a .csv file.")
+    upload_csv = st.file_uploader("CSV file", type=["csv", "txt"], key="csv-file",
+                                  label_visibility="collapsed")
+    if upload_csv is not None and st.session_state.get("csv-file-seen") != upload_csv.file_id:
+        st.session_state["csv-file-seen"] = upload_csv.file_id
+        st.session_state["csv-text"] = upload_csv.getvalue().decode("utf-8-sig", errors="replace")
+    st.session_state.setdefault("csv-text", CSV_EXAMPLE)
+    csv_text = st.text_area("Rows", key="csv-text", height=170)
+    planned, problems = plan(csv_text, routes())
+    for problem in problems:
+        st.warning(problem + ". This row will be skipped.")
+    if planned:
+        st.dataframe([{"Location": p.location or "(open location)", "Curb": p.label, "Use": p.use,
+                       "Blocks": ", ".join(z.block for line in p.lines for z in zoner().zones(line)),
+                       "Dates & hours": "; ".join(dates_and_hours(w) for w in p.windows) or "-"}
+                      for p in planned], hide_index=True, use_container_width=True)
+        again = st.session_state.get("csv_done") == csv_text
+        st.button(f"Add these {len(planned)} curb{'s' if len(planned) != 1 else ''} "
+                  f"{'again' if again else 'to the request'}",
+                  type="secondary" if again else "primary", on_click=add_planned, args=(planned, csv_text),
+                  help="These rows were already added; adding them again makes copies." if again else None)
+    if st.session_state.get("csv_added"):
+        st.success(st.session_state.pop("csv_added"))
+
 loc = next(loc for loc in req.locations if loc.id == st.session_state.current)
 
 map_col, side_col = st.columns([3, 1])
@@ -472,9 +548,10 @@ if zones:
     st.divider()
     st.subheader("Curb zones")
     st.caption(f"One row per block. **Curb**, **Meters** and **Spaces** are filled in from SFMTA "
-               f"meter and color-curb data (updated {curb_data().built}): one space per meter on "
-               f"metered curb, otherwise 20 ft per space minus driveways. Change anything you know "
-               f"better.")
+               f"data (meters and color curbs updated {curb_data().built}). Metered curb: one "
+               f"space per meter. Unmetered curb: SFMTA's parking census, which counted the legal "
+               f"spaces around every driveway (2008-2014). SFMTA only maps driveways painted red, "
+               f"so those are listed as red-curb driveways. Change anything you know better.")
 
     def zone_rows():
         return [{"Zone": i, "Block": z.block, "Side": z.side, "Between": z.between,

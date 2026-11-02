@@ -26,6 +26,7 @@ class CurbZone:
     cnn: int = field(default=0, repr=False)          # the block, for curb data lookups
     side_sign: int = field(default=1, repr=False)    # +1 left of the block, -1 right
     along_m: tuple = field(default=(0, 0), repr=False)  # stretch of the block covered
+    block_ft: float = field(default=0, repr=False)      # whole block, intersection to intersection
 
     @property
     def spaces(self):
@@ -118,6 +119,7 @@ class CurbZoner:
             cnn=seg["cnn"],
             side_sign=Counter(h[8] for h in run).most_common(1)[0][0],
             along_m=(min(alongs), max(alongs)),
+            block_ft=self.index.seg_length[run[0][0]] / M_PER_FT,
         )
 
     @staticmethod

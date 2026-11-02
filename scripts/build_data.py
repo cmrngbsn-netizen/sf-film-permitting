@@ -6,7 +6,8 @@ Outputs:
                          with address ranges per side
   data/nodes.json        intersection node CNN -> street names meeting there
   data/curbs.json        active meters and color curbs (driveways, loading zones, ...)
-                         placed on their block, side and position along the block
+                         placed on their block, side and position along the block,
+                         plus the SFMTA parking census (legal spaces per block)
   static/intersections.json  every intersection's streets and position, fetched by the
                          map's address search (served by Streamlit's static file serving)
 """
@@ -34,6 +35,11 @@ SOURCES = {
 SFMTA = "https://services.sfmta.com/arcgis/rest/services/Parking/parking/MapServer"
 METERS_LAYER = 11
 CURBS_LAYER = 18
+# Legal on-street spaces per block (both sides), counted in the field 2008-2014. It is the
+# only source that reflects every driveway: the color curb layer only has driveways
+# painted red. 5555 marks a divided street whose count was put on the other roadway.
+CENSUS_LAYER = 4
+CENSUS_ELSEWHERE = 5555
 # Active on-street meters only ("M" or "T", per SFMTA's notes on the layer).
 METERS_WHERE = "ON_OFFSTREET_TYPE='ON' AND ACTIVE_METER_FLAG IN ('M','T')"
 # A meter or curb point farther than this from any street centerline is skipped.
@@ -177,11 +183,22 @@ def build_curbs():
         cnn = str(index.segments[seg]["cnn"])
         by_block.setdefault(cnn, []).append([side, round(along, 1), kind, feet])
 
+    print("Downloading SFMTA parking census ...")
+    census = {}
+    for f in fetch_arcgis(CENSUS_LAYER, "1=1", "CNN,PRKG_SPLY,YEAR"):
+        a = f["attributes"]
+        if a["CNN"] is None or a["PRKG_SPLY"] is None or a["PRKG_SPLY"] == CENSUS_ELSEWHERE:
+            continue
+        cnn = str(int(a["CNN"]))
+        spaces, year = census.get(cnn, (0, 0))
+        census[cnn] = [spaces + a["PRKG_SPLY"], max(year, a["YEAR"] or 0)]
+
     out = DATA_DIR / "curbs.json"
-    out.write_text(json.dumps({"built": date.today().isoformat(), "blocks": by_block},
-                              separators=(",", ":")))
+    out.write_text(json.dumps({"built": date.today().isoformat(), "blocks": by_block,
+                               "census": census}, separators=(",", ":")))
     print(f"Meters: {len(meters)}  Color curbs: {len(curbs)}  "
           f"Placed: {len(points) - skipped}  Skipped (off street): {skipped}  "
+          f"Census blocks: {len(census)}  "
           f"-> {out.stat().st_size // 1024} KB")
 
 

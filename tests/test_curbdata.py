@@ -28,19 +28,19 @@ def main_zone(zoner, street, a, b, offset):
 
 
 def test_describe_and_spaces():
-    info = CurbInfo(Counter({"Grey": 7, "Yellow": 5, "Black": 2}), [("driveway", 9), ("driveway", 9)])
+    info = CurbInfo(Counter({"Grey": 7, "Yellow": 5, "Black": 2}), [("red-curb driveway", 9), ("red-curb driveway", 9)])
     assert info.car_meters == 12
     assert info.metered
     assert info.suggested_spaces(280) == 12
     assert info.describe() == ("14 meters (7 general, 5 yellow (commercial loading), 2 black (motorcycle)); "
-                               "2 driveways (18 ft)")
+                               "2 red-curb driveways (18 ft)")
 
 
 def test_unmetered_spaces_skip_driveways():
-    info = CurbInfo(zones=[("driveway", 10), ("driveway", 10), ("blue zone (disabled)", 20)])
+    info = CurbInfo(zones=[("red-curb driveway", 10), ("red-curb driveway", 10), ("blue zone (disabled)", 20)])
     assert not info.metered
     assert info.suggested_spaces(200) == 9  # (200 - 20) / 20
-    assert info.describe() == "2 driveways (20 ft); 1 blue zone (disabled) (20 ft)"
+    assert info.describe() == "2 red-curb driveways (20 ft); 1 blue zone (disabled) (20 ft)"
     assert CurbInfo().describe() == "no meters or color curbs on record"
 
 
@@ -59,3 +59,20 @@ def test_sides_are_kept_apart(zoner, curbs):
 
 def test_curb_data_has_a_build_date(curbs):
     assert len(curbs.built) == 10
+
+
+def test_census_counts_driveways_on_unmetered_curb(zoner, curbs):
+    # 29th Ave in the Sunset has a driveway at nearly every house, but almost none are
+    # painted red. The census (about 31 spaces on the block) catches them; 20 ft per space
+    # on the 618 ft side would claim about 31 spaces for one side alone.
+    zone = main_zone(zoner, "29TH AVE", "JUDAH ST", "KIRKHAM ST", 6)
+    info = curbs.lookup(zone)
+    assert not info.metered and info.census is not None
+    assert 8 <= info.suggested_spaces(zone.length_ft) <= 20
+    assert "parking census" in info.describe()
+
+
+def test_metered_curb_ignores_census():
+    info = CurbInfo(Counter({"Grey": 6}), census=3.0, census_year=2010)
+    assert info.suggested_spaces(200) == 6
+    assert "census" not in info.describe()

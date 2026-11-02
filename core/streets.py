@@ -106,8 +106,10 @@ class StreetIndex:
         self.segments = [f["properties"] for f in segments]
         starts, stops, owner, offset = [], [], [], []
         self.seg_length = []  # meters, per block
+        self.seg_xy = []      # [(x, y), ...] per block, from f_node to t_node
         for i, f in enumerate(segments):
             pts = [to_xy(lat, lon) for lon, lat in f["geometry"]["coordinates"]]
+            self.seg_xy.append(pts)
             along = 0.0
             for a, b in zip(pts, pts[1:]):
                 starts.append(a)
