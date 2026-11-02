@@ -1,4 +1,4 @@
-"""Street lookups for SF: nearest intersection, nearest block, and plain-English labels.
+"""Street lookups for SF: street blocks, intersections, and street names as Film SF writes them.
 
 Distances use a flat local projection in meters, which is accurate to well under
 1% across a city the size of San Francisco.
@@ -8,18 +8,11 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-
-# Tuning knobs. A corner within this distance is suggested as a snap; beyond it the
-# point is treated as mid-block and kept where it was drawn.
-SNAP_SUGGEST_M = 30
-# Closer than this to an intersection's center, the point has no meaningful corner.
-CENTER_RADIUS_M = 3
 
 M_PER_FT = 0.3048
 LAT0 = 37.76  # projection origin, middle of SF
@@ -68,20 +61,6 @@ def join_streets(names):
     return " & ".join(pretty_street(n) for n in names) if names else "unnamed streets"
 
 
-def compass(dx, dy):
-    """Corner name ("NE", "SW", ...) for an offset from an intersection center."""
-    return ("N" if dy >= 0 else "S") + ("E" if dx >= 0 else "W")
-
-
-@dataclass
-class PointLabel:
-    kind: str           # "corner" or "mid-block"
-    label: str          # what goes on the form
-    distance_ft: float  # from the drawn point to the suggested location
-    snap_lat: float     # suggested location
-    snap_lon: float
-
-
 class StreetIndex:
     def __init__(self, data_dir=DATA_DIR):
         segments = json.loads((data_dir / "segments.geojson").read_text())["features"]
@@ -123,13 +102,6 @@ class StreetIndex:
         self.piece_owner = np.array(owner)
         self.piece_offset = np.array(offset)
 
-    def nearest_intersection(self, lat, lon):
-        """(cnn, distance_m, x, y) of the closest real intersection."""
-        x, y = to_xy(lat, lon)
-        d = np.hypot(self.int_xy[:, 0] - x, self.int_xy[:, 1] - y)
-        i = int(d.argmin())
-        return self.int_cnns[i], float(d[i]), *self.int_xy[i]
-
     def nearest_piece(self, x, y):
         """Closest centerline point to (x, y) in meters: (segment index, distance_m,
         closest x, closest y, direction of the piece, distance along the block)."""
@@ -143,12 +115,6 @@ class StreetIndex:
         i = int(d.argmin())
         along = self.piece_offset[i] + t[i] * math.sqrt(length2[i])
         return int(self.piece_owner[i]), float(d[i]), *closest[i], ab[i], float(along)
-
-    def nearest_block(self, lat, lon):
-        """(segment properties, distance_m, x, y of the closest point on the centerline,
-        direction of the piece it lies on)."""
-        seg, d, cx, cy, direction, _ = self.nearest_piece(*to_xy(lat, lon))
-        return self.segments[seg], d, cx, cy, direction
 
     def intersection_index(self):
         """Every intersection, for searching "Grant & Washington" on the map:
@@ -167,28 +133,3 @@ class StreetIndex:
             return "unknown"
         others = [n for n in names if n != own_street]
         return join_streets(others) if others else "mid-block"
-
-    def label_point(self, lat, lon):
-        x, y = to_xy(lat, lon)
-        cnn, dist, ix, iy = self.nearest_intersection(lat, lon)
-        if dist <= SNAP_SUGGEST_M:
-            streets = join_streets(self.node_names[cnn])
-            if dist < CENTER_RADIUS_M:
-                label = f"Center of {streets}"
-            else:
-                label = f"{compass(x - ix, y - iy)} corner, {streets}"
-            snap_lat, snap_lon = to_latlon(float(ix), float(iy))
-            return PointLabel("corner", label, dist / M_PER_FT, snap_lat, snap_lon)
-
-        seg, dist, cx, cy, (dx, dy) = self.nearest_block(lat, lon)
-        own = " ".join(filter(None, [seg["street"], seg["st_type"]]))
-        # Which side of the street the point is on, named by the street's main direction.
-        if abs(dx) >= abs(dy):  # street runs mostly east-west
-            side = "north" if y >= cy else "south"
-        else:
-            side = "east" if x >= cx else "west"
-        a = self.cross_streets(seg["f_node_cnn"], own)
-        b = self.cross_streets(seg["t_node_cnn"], own)
-        label = f"{pretty_street(own)}, {side} side, between {a} and {b}"
-        # Mid-block points stay where they were drawn.
-        return PointLabel("mid-block", label, 0.0, lat, lon)

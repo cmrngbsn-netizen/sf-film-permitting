@@ -10,11 +10,11 @@ Run locally with: streamlit run app.py
 import io
 import re
 import sys
-from dataclasses import replace
 from datetime import date, datetime, time
 from pathlib import Path
 
 import folium
+import pandas as pd
 import pypdfium2
 import streamlit as st
 from folium.plugins import Draw
@@ -35,11 +35,10 @@ if getattr(sys, "_sf_core_version", None) != code_version():
         del sys.modules[name]
     sys._sf_core_version = code_version()
 
-from core.basemaps import DEFAULT as BASEMAP  # noqa: E402
+from core.basemaps import OSM  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
 from core.bulk import EXAMPLE as CSV_EXAMPLE, StreetRoutes, plan  # noqa: E402
 from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
-from core.drawings import merge  # noqa: E402
 from core.map_tools import MapTools  # noqa: E402
 from core.pdf import Box, Page, build_pdf, render_map  # noqa: E402
 from core.request import (DEFAULT_COLOR, LINE_COLORS, REQUEST_FIELDS,  # noqa: E402
@@ -88,7 +87,7 @@ def curb_data():
 def pdf_map(lines, arrows, markers):
     return render_map([(list(pts), rgb(color), label) for pts, color, label in lines],
                       [(kind, point, text, size, rgb(color)) for kind, point, text, size, color in markers],
-                      BASEMAP, [(list(pts), rgb(color)) for pts, color in arrows])
+                      [(list(pts), rgb(color)) for pts, color in arrows])
 
 
 @st.cache_data(show_spinner="Drawing the page previews...")
@@ -108,18 +107,12 @@ def rgb(hex_color):
     return tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
 
 
-def add_basemap(m, basemap):
-    for i, url in enumerate(basemap.layers):
-        folium.TileLayer(url, attr=basemap.credit if i == 0 else " ", max_zoom=20,
-                         max_native_zoom=basemap.max_zoom).add_to(m)
-
-
 def base_map(**kwargs):
     """A map of SF on the basemap."""
     m = folium.Map(tiles=None, min_zoom=12, scroll_wheel_zoom=False, max_zoom=20, max_bounds=True,
                    min_lat=SF_BOUNDS[0][0], min_lon=SF_BOUNDS[0][1],
                    max_lat=SF_BOUNDS[1][0], max_lon=SF_BOUNDS[1][1], **kwargs)
-    add_basemap(m, BASEMAP)
+    folium.TileLayer(OSM.url, attr=OSM.credit, max_zoom=20, max_native_zoom=OSM.max_zoom).add_to(m)
     return m
 
 
@@ -179,6 +172,12 @@ def window_columns(compact=False):
     return {"Date": st.column_config.DateColumn(format="MM/DD/YY" if compact else "ddd MM/DD/YY"),
             "Start": st.column_config.TimeColumn(format="h:mm a", step=900),
             "End": st.column_config.TimeColumn(format="h:mm a", step=900)}
+
+
+def window_rows(windows):
+    """Date, Start and End rows for a table, with its columns even when there are no rows yet."""
+    return pd.DataFrame([{"Date": w.date, "Start": w.start, "End": w.end} for w in windows],
+                        columns=["Date", "Start", "End"])
 
 
 def zone_id(z):
@@ -480,24 +479,16 @@ def locations_step():
 
         lines = [d for d in drawings if (d.get("geometry") or {}).get("type") == "LineString"]
         points = [d for d in drawings if (d.get("geometry") or {}).get("type") == "Point"]
-        if all("kind" in (d.get("properties") or {}) for d in lines + points):
-            # The map script keeps each shape's details on the shape itself (core.map_tools).
-            loc.lines = [Line(latlon(d["geometry"]["coordinates"]), d["properties"].get("color", DEFAULT_COLOR))
-                         for d in lines if d["properties"]["kind"] != "arrow"]
-            loc.arrows = [Arrow(latlon(d["geometry"]["coordinates"]))
-                          for d in lines if d["properties"]["kind"] == "arrow"]
-            loc.markers = [Marker(latlon([d["geometry"]["coordinates"]])[0], d["properties"]["kind"],
-                                  d["properties"].get("text", ""), text_size(d["properties"].get("size")),
-                                  d["properties"].get("color", TEXT_COLOR)) for d in points]
-        else:
-            # Shapes without details (shouldn't happen with the map script loaded): keep what
-            # we knew about them by matching positions.
-            loc.lines = merge(loc.lines, [latlon(d["geometry"]["coordinates"]) for d in lines],
-                              lambda line: line.points, lambda line, pts: replace(line, points=pts),
-                              lambda pts: Line(pts))
-            loc.markers = merge(loc.markers, [latlon([d["geometry"]["coordinates"]])[0] for d in points],
-                                lambda mk: mk.point, lambda mk, pt: replace(mk, point=pt),
-                                lambda pt: Marker(pt, TEXT))
+        def details(d):  # the map script keeps each shape's details on the shape (core.map_tools)
+            return d.get("properties") or {}
+
+        loc.lines = [Line(latlon(d["geometry"]["coordinates"]), details(d).get("color", DEFAULT_COLOR))
+                     for d in lines if details(d).get("kind") != "arrow"]
+        loc.arrows = [Arrow(latlon(d["geometry"]["coordinates"]))
+                      for d in lines if details(d).get("kind") == "arrow"]
+        loc.markers = [Marker(latlon([d["geometry"]["coordinates"]])[0], details(d).get("kind", TEXT),
+                              details(d).get("text", ""), text_size(details(d).get("size")),
+                              details(d).get("color", TEXT_COLOR)) for d in points]
     zones, ids, colors, base_rows = location_zones(loc)
 
     # Until the user types their own, the Location name follows the lines ("Grant @ Washington").
@@ -531,11 +522,11 @@ def locations_step():
                     "end time earlier than the start means the next day.")
         dates_key = f"dates-g{gen}-{loc.id}"
         picked = st.data_editor(
-            snapshot(dates_key, lambda: [{"Date": w.date, "Start": w.start, "End": w.end} for w in loc.dates]),
+            snapshot(dates_key, lambda: window_rows(loc.dates)),
             key=dates_key, hide_index=True, use_container_width=True, num_rows="dynamic",
             column_config=window_columns(compact=True))
         loc.dates = [Window(as_date(r.get("Date")), as_time(r.get("Start")), as_time(r.get("End")))
-                     for r in picked] or [Window()]
+                     for r in picked.to_dict("records")]
         with st.expander("Scenes and notes", expanded=bool(loc.scenes or loc.notes)):
             scenes = {"text": "\n".join(loc.scenes)}
             bound_text("Scene(s)", scenes, "text", f"g{gen}-{loc.id}-scenes", area=True, height=80,
@@ -598,7 +589,7 @@ def locations_step():
             own_key = f"own-{zones_key}-{hash(tuple(ids[i] for i in own))}"
             rows = st.data_editor(
                 snapshot(own_key, lambda: [{"Zone": labels[i], "Date": w.date, "Start": w.start, "End": w.end}
-                                           for i in own for w in loc.windows[ids[i]] or [Window()]]),
+                                           for i in own for w in loc.windows[ids[i]]]),
                 key=own_key, hide_index=True, use_container_width=True, num_rows="dynamic",
                 column_config={"Zone": st.column_config.SelectboxColumn(options=own_labels, required=True,
                                                                         width="large"),

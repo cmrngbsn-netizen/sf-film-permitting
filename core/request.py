@@ -20,7 +20,6 @@ LINE_COLORS = {"Red": "#d62728", "Blue": "#1f77b4", "Green": "#2ca02c",
                "Orange": "#ff7f0e", "Purple": "#9467bd", "Black": "#222222"}
 DEFAULT_COLOR = LINE_COLORS["Red"]
 STAR, TEXT = "Star", "Text box"
-MARKER_KINDS = [STAR, TEXT]
 TEXT_COLOR = LINE_COLORS["Black"]  # default text box border
 ARROW_COLOR = "#000000"  # arrows are always black
 TEXT_PX = {"min": 10, "max": 36, "default": 14}  # text box font size on screen, in pixels
@@ -81,7 +80,7 @@ class Location:
     markers: list = field(default_factory=list)  # [Marker, ...]
     zones: dict = field(default_factory=dict)    # zone id -> edited row (Curb, Meters, Spaces, Use)
     # Dates and hours for every zone here, unless a zone has its own in `windows`.
-    dates: list = field(default_factory=lambda: [Window()])
+    dates: list = field(default_factory=list)
     windows: dict = field(default_factory=dict)  # zone id -> [Window, ...], zones with their own times
     # The Location name is filled in from the drawn lines until the user types their own.
     auto_name: bool = True
@@ -189,12 +188,12 @@ def _dates_in(raw):
     Before that every zone had its own; when they all match, they become the location's."""
     windows = {zid: [_window_in(w) for w in ws] for zid, ws in raw.get("windows", {}).items()}
     if "dates" in raw:
-        return {"dates": [_window_in(w) for w in raw["dates"]] or [Window()], "windows": windows}
+        return {"dates": [_window_in(w) for w in raw["dates"]], "windows": windows}
     filled = {zid: ws for zid, ws in windows.items() if any(w.date or w.start or w.end for w in ws)}
     schedules = list(filled.values())
     if schedules and len(filled) == len(windows) and all(ws == schedules[0] for ws in schedules):
         return {"dates": schedules[0], "windows": {}}
-    return {"dates": [Window()], "windows": filled}
+    return {"dates": [], "windows": filled}
 
 
 def _window_in(raw):

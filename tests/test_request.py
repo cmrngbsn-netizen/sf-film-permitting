@@ -115,4 +115,4 @@ def test_version_4_matching_zone_times_become_location_dates():
     v4 = v4.replace("D", json.dumps(day)).replace("E", json.dumps({**day, "end": "23:00"}))
     same, different = Request.from_json(v4).locations
     assert same.dates == [Window(date(2026, 11, 4), time(7), time(22))] and same.windows == {}
-    assert len(different.windows) == 2 and different.dates == [Window()]
+    assert len(different.windows) == 2 and different.dates == []

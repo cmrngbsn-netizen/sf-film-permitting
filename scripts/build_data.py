@@ -13,7 +13,6 @@ Outputs:
 """
 
 import json
-import math
 import sys
 import urllib.parse
 import urllib.request

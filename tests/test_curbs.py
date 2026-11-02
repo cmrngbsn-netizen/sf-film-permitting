@@ -3,7 +3,7 @@
 import pytest
 
 from core.curbs import CurbZoner, place_name, place_names, short_street
-from core.streets import StreetIndex, to_latlon, to_xy
+from core.streets import StreetIndex, to_latlon
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +40,6 @@ def test_grant_800_block_west_side(zoner):
     assert z.between in ("Clay St and Washington St", "Washington St and Clay St")
     block_ft = ((wash[0] - clay[0]) ** 2 + (wash[1] - clay[1]) ** 2) ** 0.5 / 0.3048
     assert z.length_ft == pytest.approx(block_ft * 0.6, rel=0.08)
-    assert z.spaces == round(z.length_ft / 20)
 
 
 def test_mcallister_400_block_north_side(zoner):

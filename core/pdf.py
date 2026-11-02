@@ -18,7 +18,7 @@ from reportlab.platypus import Image as PdfImage
 from reportlab.platypus import (BaseDocTemplate, Frame, FrameBreak, KeepInFrame, PageBreak,
                                 PageTemplate, Paragraph, Spacer, Table, TableStyle)
 
-from core.basemaps import DEFAULT
+from core.basemaps import OSM
 
 # Tile servers ask apps to identify themselves.
 TILE_HEADERS = {"User-Agent": "sf-film-permitting/0.1 (+https://github.com/cmrngbsn-netizen/sf-film-permitting)"}
@@ -43,8 +43,7 @@ def fetch_tile(url):
 
 
 def render_tiles(url, zoom, cx, cy):
-    """One tile layer as a transparent RGBA image of MAP_SIZE centered on tile coords
-    (cx, cy); overlay layers keep their transparency."""
+    """The basemap's tiles as an RGBA image of MAP_SIZE centered on tile coords (cx, cy)."""
     w, h = MAP_SIZE
     left, top = cx * TILE - w / 2, cy * TILE - h / 2
     xs = range(math.floor(left / TILE), math.floor((left + w) / TILE) + 1)
@@ -52,7 +51,7 @@ def render_tiles(url, zoom, cx, cy):
     spots = [(x, y) for x in xs for y in ys]
     with ThreadPoolExecutor(max_workers=4) as pool:
         tiles = pool.map(lambda xy: fetch_tile(url.format(z=zoom, x=xy[0], y=xy[1])), spots)
-    image = Image.new("RGBA", MAP_SIZE, (0, 0, 0, 0))
+    image = Image.new("RGBA", MAP_SIZE, (255, 255, 255, 255))
     for (x, y), tile in zip(spots, tiles):
         image.alpha_composite(tile, (round(x * TILE - left), round(y * TILE - top)))
     return image
@@ -100,7 +99,7 @@ def text_box(overlay, x, y, text, font_px, border):
                         stroke_width=1, stroke_fill=(29, 29, 31, 255))
 
 
-def render_map(lines, markers=(), basemap=DEFAULT, arrows=()):
+def render_map(lines, markers=(), arrows=(), basemap=OSM):
     """PNG bytes of curb zones, arrows and markers over a basemap (core.basemaps).
     lines: [(points [(lat, lon), ...], (r, g, b), label), ...]
     markers: [(kind "Star" or "Text box", (lat, lon), text, size_px, (r, g, b) border), ...]
@@ -118,10 +117,7 @@ def render_map(lines, markers=(), basemap=DEFAULT, arrows=()):
             break
         zoom -= 1
     cx, cy = tile_x(center[0], zoom), tile_y(center[1], zoom)
-    # Tile layers stacked bottom first: imagery, then label overlays.
-    base = Image.new("RGBA", MAP_SIZE, (255, 255, 255, 255))
-    for url in basemap.layers:
-        base.alpha_composite(render_tiles(url, zoom, cx, cy))
+    base = render_tiles(basemap.url, zoom, cx, cy)
 
     def to_px(lat, lon):
         return ((tile_x(lon, zoom) - cx) * TILE + MAP_SIZE[0] / 2,

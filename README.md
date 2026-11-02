@@ -1,10 +1,16 @@
 # SF Film Parking Request (beta)
 
-Draw lines along the curbs you need for a film shoot in San Francisco, at one or more
-locations. Each line is split into one zone per block and named the way Film SF does
-("8 metered spaces on north side 400-490 McAllister St"). Set each zone's use, meters,
-dates and hours, then download a parking request PDF with one page per location. Save the
-request to a `.json` file from the sidebar and open it again later.
+Plan the street parking a film shoot in San Francisco needs, and export it as a parking
+request PDF in the format Film SF expects, with one page per location.
+
+1. **Shoot info**: production, project, email and permit number, shared by every page.
+2. **Locations & curbs**: draw lines along the curbs you need (or import them from CSV
+   under *Add location*). Each line is split into one zone per block and named the way
+   Film SF does ("8 metered spaces on north side 400-490 McAllister St"). Set the
+   location's dates and hours once; a zone can have its own.
+3. **Review & PDF**: preview every page, then download the PDF.
+
+Requests are saved to and opened from a `.json` file (Save / Open in the top bar).
 
 ## Run locally
 
@@ -21,13 +27,27 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-## Street data
+## Layout
 
-`data/segments.geojson` (street blocks with address ranges) and `data/nodes.json` (street names at each intersection)
-come from DataSF datasets `3psu-pn9h` and `gmfx-8h6i`. `data/curbs.json` holds active on-street
-meters (by cap color) and color curbs (driveways, blue/white/yellow/green zones, ...) from
-SFMTA's parking map service, placed on their block and side. SFMTA updates meters weekly, so
-rebuild every few weeks to stay current. To rebuild everything from the latest city data:
+- `app.py`: the Streamlit app (steps, map, tables, PDF preview).
+- `core/map_tools.py`: the map's tools, written in JavaScript inside the map.
+- `core/curbs.py`, `core/streets.py`: lines to per-block curb zones, street names.
+- `core/curbdata.py`: meters, color curbs and the parking census for a zone.
+- `core/summary.py`, `core/pdf.py`: Film SF wording and the PDF.
+- `core/request.py`: the request and its save file. `core/bulk.py`: CSV import.
+- `scripts/build_data.py`: rebuilds `data/` and `static/` from city data.
+
+## Street and curb data
+
+- `data/segments.geojson` (street blocks with address ranges) and `data/nodes.json` (street
+  names at each intersection) come from DataSF datasets `3psu-pn9h` and `gmfx-8h6i`.
+- `data/curbs.json` holds SFMTA's active on-street meters (by cap color), color curbs, and
+  the on-street parking census (legal spaces per block, counted 2008-2014). The census
+  sets the space count on unmetered curb because it accounts for every driveway; SFMTA's
+  color curb data only has driveways painted red.
+- `static/intersections.json` is the intersection list the map's search uses.
+
+SFMTA updates meters weekly, so rebuild every few weeks to stay current:
 
 ```bash
 .venv/bin/python scripts/build_data.py --refresh
@@ -35,4 +55,3 @@ rebuild every few weeks to stay current. To rebuild everything from the latest c
 
 Known gaps: 96 intersections have no names in the city data (mostly Treasure Island,
 Yerba Buena Island, Hunters Point and Mission Bay).
-

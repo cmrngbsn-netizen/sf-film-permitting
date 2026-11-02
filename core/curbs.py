@@ -28,10 +28,6 @@ class CurbZone:
     along_m: tuple = field(default=(0, 0), repr=False)  # stretch of the block covered
     block_ft: float = field(default=0, repr=False)      # whole block, intersection to intersection
 
-    @property
-    def spaces(self):
-        return max(1, round(self.length_ft / SPACE_FT))
-
 
 class CurbZoner:
     def __init__(self, index):
