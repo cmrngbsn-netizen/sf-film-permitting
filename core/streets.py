@@ -155,7 +155,8 @@ class StreetIndex:
         number = {n: i for i, n in enumerate(names)}
         nodes = [[[number[n] for n in self.node_names[c]], *(round(v, 5) for v in to_latlon(x, y))]
                  for c, (x, y) in zip(self.int_cnns, self.int_xy)]
-        return {"streets": [[pretty_street(n), street_key(n)] for n in names], "nodes": nodes}
+        return {"streets": [[pretty_street(re.sub(r"\b0+(\d)", r"\1", n)), street_key(n)] for n in names],
+                "nodes": nodes}
 
     def cross_streets(self, node_cnn, own_street):
         """Names at a block's end node other than the block's own street."""
