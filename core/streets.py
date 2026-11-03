@@ -30,9 +30,9 @@ def to_latlon(x, y):
 
 
 def pretty_street(name):
-    """"VALENCIA ST" -> "Valencia St", "18TH ST" -> "18th St", "O'FARRELL ST" -> "O'Farrell St"."""
+    """"VALENCIA ST" -> "Valencia St", "06TH ST" -> "6th St", "O'FARRELL ST" -> "O'Farrell St"."""
     words = []
-    for w in name.split():
+    for w in re.sub(r"\b0+(\d)", r"\1", name).split():
         if re.fullmatch(r"\d+(ST|ND|RD|TH)", w):
             words.append(w.lower())
         elif w.startswith("MC") and len(w) > 2:
@@ -123,7 +123,7 @@ class StreetIndex:
         number = {n: i for i, n in enumerate(names)}
         nodes = [[[number[n] for n in self.node_names[c]], *(round(v, 5) for v in to_latlon(x, y))]
                  for c, (x, y) in zip(self.int_cnns, self.int_xy)]
-        return {"streets": [[pretty_street(re.sub(r"\b0+(\d)", r"\1", n)), street_key(n)] for n in names],
+        return {"streets": [[pretty_street(n), street_key(n)] for n in names],
                 "nodes": nodes}
 
     def cross_streets(self, node_cnn, own_street):

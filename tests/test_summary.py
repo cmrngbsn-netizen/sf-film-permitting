@@ -2,7 +2,7 @@
 
 from datetime import date, time
 
-from core.summary import PICTURE, Window, ZoneRequest, by_color, dates_and_hours, street_side, summarize
+from core.summary import PICTURE, Window, ZoneRequest, dates_and_hours, street_side, summarize
 
 
 def test_street_side_matches_film_sf_wording():
@@ -30,8 +30,9 @@ def test_shared_schedule_listed_once():
     assert s["# of signs"] == "29 total spaces"
     assert s["Block #"] == ["800-890 Grant Ave", "700-790 Clay St"]
     assert s["Dates & hours"] == ["WE, 11/04/26 7:00 AM - 10:00 PM"]
-    assert len(s["Street side"]) == 3
-    assert s["Curb notes"] == []
+    # Two pieces of one block side (split by an alley) are one line, as Film SF writes it.
+    assert s["Street side"] == ["23 spaces on west side 800-890 Grant Ave", "6 spaces on north side 700-790 Clay St"]
+    assert s["By color"] == []
 
 
 def test_several_windows_and_different_schedules():
@@ -41,30 +42,26 @@ def test_several_windows_and_different_schedules():
                        Window(date(2026, 11, 4), time(7), time(19))]
     zones = [ZoneRequest("200-290 Harriet St", "west", 2, windows=prep_shoot_wrap),
              ZoneRequest("400-450 6th St", "west", 8, windows=[Window(date(2026, 11, 3), time(7), time(23, 59))])]
-    assert summarize(zones)["Dates & hours"] == [
-        "200-290 Harriet St, west side: MO, 11/02/26 7:00 AM - 7:00 PM; "
+    # Same line color: each schedule says which blocks it is for.
+    assert summarize(zones, ["red", "red"])["Dates & hours"] == [
+        "200-290 Harriet St (west): MO, 11/02/26 7:00 AM - 7:00 PM; "
         "TU, 11/03/26 7:00 AM - 11:59 PM; WE, 11/04/26 7:00 AM - 7:00 PM",
-        "400-450 6th St, west side: TU, 11/03/26 7:00 AM - 11:59 PM",
+        "400-450 6th St (west): TU, 11/03/26 7:00 AM - 11:59 PM",
     ]
+    # Line colors tell them apart: each line once, and a box per color, like the slides.
+    s = summarize(zones, ["green", "red"])
+    assert s["Dates & hours"] == ["MO, 11/02/26 7:00 AM - 7:00 PM", "TU, 11/03/26 7:00 AM - 11:59 PM",
+                                  "WE, 11/04/26 7:00 AM - 7:00 PM"]
+    assert [(c, len(d)) for c, _, d in s["By color"]] == [("green", 3), ("red", 1)]
 
 
 def test_no_dates_yet():
     assert summarize([ZoneRequest("x", "north", 1, windows=[Window()])])["Dates & hours"] == []
 
 
-def test_curb_notes():
-    z = ZoneRequest("800-890 Grant Ave", "west", 12, curb="12 meters (7 general, 5 yellow (commercial loading))")
-    assert summarize([z])["Curb notes"] == [
-        "800-890 Grant Ave, west side: 12 meters (7 general, 5 yellow (commercial loading))"]
-
-
-def test_by_color_groups_zones_like_the_slides():
+def test_same_schedule_needs_no_color_boxes():
     wed = [Window(date(2026, 11, 4), time(7), time(22))]
     zones = [ZoneRequest("800-890 Grant Ave", "west", 12, windows=wed),
-             ZoneRequest("800-890 Washington St", "south", 4, use=PICTURE, windows=wed),
-             ZoneRequest("700-790 Clay St", "north", 6, windows=wed)]
-    groups = by_color(zones, ["#d62728", "#1f77b4", "#d62728"])
-    assert [(c, uses) for c, uses, _, _ in groups] == [("#d62728", ["Working vehicles"]),
-                                                       ("#1f77b4", ["Picture"])]
-    assert groups[0][2] == ["WE, 11/04/26 7:00 AM - 10:00 PM"]
-    assert groups[0][3] == ["12 spaces on west side 800-890 Grant Ave", "6 spaces on north side 700-790 Clay St"]
+             ZoneRequest("800-890 Washington St", "south", 4, use=PICTURE, windows=wed)]
+    s = summarize(zones, ["#d62728", "#1f77b4"])
+    assert s["Dates & hours"] == ["WE, 11/04/26 7:00 AM - 10:00 PM"] and s["By color"] == []

@@ -25,7 +25,6 @@ class ZoneRequest:
     use: str = WORKING
     meters: str = "Not sure"
     windows: list = field(default_factory=list)  # [Window, ...]
-    curb: str = ""  # meters, driveways and color zones on this stretch
 
 
 def clock(t):
@@ -62,32 +61,48 @@ def unique(items):
     return list(dict.fromkeys(i for i in items if i))
 
 
-def summarize(zones):
-    """The table fields of a Film SF parking request, in the order they appear there."""
-    hours = [zone_hours(z) for z in zones]
-    if len({tuple(h) for h in hours}) <= 1:
-        # Every zone has the same schedule: list it once.
-        dates = hours[0] if hours else []
+def street_sides(zones):
+    """Street side lines. Pieces of one block side (an alley can split a block in two) are
+    added up into one line, as Film SF writes them."""
+    totals = {}
+    for z in zones:
+        key = (z.block, z.side, z.meters)
+        totals[key] = totals.get(key, 0) + z.spaces
+    return [street_side(ZoneRequest(block, side, n, meters=m)) for (block, side, m), n in totals.items()]
+
+
+def schedules(zones):
+    """{(dates & hours lines): [zones with that schedule]}, in first-seen order."""
+    out = {}
+    for z in zones:
+        out.setdefault(tuple(zone_hours(z)), []).append(z)
+    return out
+
+
+def summarize(zones, colors=None):
+    """The table fields of a Film SF parking request, in the order they appear there, plus
+    "By color": [(color, uses, dates & hours lines), ...] for the color-matched boxes on the
+    Film SF slides, when line colors tell the schedules apart."""
+    groups = {k: v for k, v in schedules(zones).items() if k}
+    by_color = []
+    if len(groups) <= 1:
+        dates = list(next(iter(groups), []))
     else:
-        # Schedules differ: say which zone each one belongs to.
-        dates = [f"{z.block}, {z.side} side: " + "; ".join(h) for z, h in zip(zones, hours) if h]
+        per_color = {}
+        for z, c in zip(zones, colors or []):
+            per_color.setdefault(c, []).append(z)
+        if colors and all(len(schedules(zs)) == 1 for zs in per_color.values()):
+            # Each line color has one schedule: list the schedules once, and the colored
+            # boxes say which goes with which lines.
+            dates = unique(line for s in groups for line in s)
+            by_color = [(c, unique(z.use for z in zs), zone_hours(zs[0])) for c, zs in per_color.items()]
+        else:
+            dates = [", ".join(unique(f"{z.block} ({z.side})" for z in zs)) + ": " + "; ".join(s)
+                     for s, zs in groups.items()]
     return {
         "# of signs": f"{sum(z.spaces for z in zones)} total spaces",
         "Block #": unique(z.block for z in zones),
-        "Street side": [street_side(z) for z in zones],
+        "Street side": street_sides(zones),
         "Dates & hours": dates,
-        "Curb notes": [f"{z.block}, {z.side} side: {z.curb}" for z in zones if z.curb],
+        "By color": by_color,
     }
-
-
-def by_color(zones, colors):
-    """Zones grouped by line color, for the color-matched boxes on the Film SF slides:
-    [(color, uses, dates & hours lines, street side lines), ...] in first-drawn order."""
-    groups = {}
-    for z, c in zip(zones, colors):
-        groups.setdefault(c, []).append(z)
-    out = []
-    for c, group in groups.items():
-        s = summarize(group)
-        out.append((c, unique(z.use for z in group), s["Dates & hours"], s["Street side"]))
-    return out

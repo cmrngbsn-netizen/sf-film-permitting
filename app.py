@@ -37,7 +37,7 @@ if getattr(sys, "_sf_core_version", None) != code_version():
     sys._sf_core_version = code_version()
 
 from core.basemaps import OSM  # noqa: E402
-from core.curbdata import NOTHING_ON_RECORD, CurbData  # noqa: E402
+from core.curbdata import CurbData  # noqa: E402
 from core.bulk import EXAMPLE as CSV_EXAMPLE, StreetRoutes, plan  # noqa: E402
 from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
 from core.map_tools import MapTools  # noqa: E402
@@ -46,7 +46,7 @@ from core.request import (DEFAULT_COLOR, LINE_COLORS, REQUEST_FIELDS,  # noqa: E
                           STAR, TEXT, TEXT_COLOR, TEXT_PX, Arrow, Line, Marker, Request,
                           format_phone, text_size)
 from core.streets import StreetIndex  # noqa: E402
-from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest, by_color,  # noqa: E402
+from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest,  # noqa: E402
                           dates_and_hours, summarize)
 
 SF_CENTER = [37.7749, -122.4194]
@@ -234,8 +234,7 @@ def location_page(req, loc):
     zones, ids, colors, rows = location_zones(loc)
     if not zones:
         return None
-    asks = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"],
-                        loc.windows_for(zid), "" if r["Curb"] == NOTHING_ON_RECORD else r["Curb"] or "")
+    asks = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"], loc.windows_for(zid))
             for z, zid, r in zip(zones, ids, rows)]
     drawn = tuple((tuple(z.points), c, str(a.spaces)) for z, c, a in zip(zones, colors, asks))
     markers = tuple((m.kind, tuple(m.point), m.text, m.size, m.color) for m in loc.markers
@@ -248,22 +247,19 @@ def location_page(req, loc):
         if a.use not in legend[c]:
             legend[c].append(a.use)
     legend = [(" / ".join(uses), c) for c, uses in legend.items()]
-    # The boxes from the Film SF slides: who (red), where (grey), then one per line color.
-    summary = summarize(asks)
+    # The boxes from the Film SF slides: who (red), where (grey), then one per line color
+    # when the colors have different dates and hours.
+    summary = summarize(asks, colors)
     boxes = [
         Box([("Production", req.info["Production"]), ("Dates & hours", summary["Dates & hours"]),
              ("Contact", loc.info["Contact"]), ("Phone", loc.info["Phone"]),
              ("Email", req.info["Email"]), ("Film SF permit #", req.info["Film SF permit #"])],
             WHO_BORDER, width=1.2),
         Box([("# of signs", summary["# of signs"]), ("Location", loc.info["Location"]),
-             ("Block #", summary["Block #"]), ("Street side", summary["Street side"]),
-             ("Curb notes", summary["Curb notes"])], WHERE_BORDER),
+             ("Block #", summary["Block #"]), ("Street side", summary["Street side"])], WHERE_BORDER),
     ]
-    groups = by_color(asks, colors)
-    if len(groups) > 1:
-        for c, uses, dates, sides in groups:
-            boxes.append(Box([("Dates & hours", dates), ("Street side", sides)], rgb(c),
-                             f"{COLOR_NAMES.get(c, '')} lines: {' / '.join(uses)}"))
+    boxes += [Box([("Dates & hours", dates)], rgb(c), f"{COLOR_NAMES.get(c, '')} lines: {' / '.join(uses)}")
+              for c, uses, dates in summary["By color"] if dates]
     return drawn, arrows, markers, boxes, legend
 
 
@@ -324,15 +320,15 @@ with steps_col:
     st.session_state.step_pick = STEPS[st.session_state.step]
     st.segmented_control("Step", STEPS, key="step_pick", on_change=picked_step,
                          label_visibility="collapsed")
-with file_col:
-    open_col, save_col = st.columns(2)
-    with open_col.popover("Open", use_container_width=True):
+# A row that keeps both buttons at their own width, wrapping instead of squeezing their labels.
+with file_col.container(horizontal=True, horizontal_alignment="right"):
+    with st.popover("Open"):
         st.file_uploader("Open a saved request (.json)", type="json", key=f"g{gen}-open",
                          on_change=open_request, args=(f"g{gen}-open",))
-    save_col.download_button("Save", req.to_json(), mime="application/json", use_container_width=True,
-                             file_name=f"{slug(project) or 'sf-parking-request'}.json",
-                             help="Download everything entered so far. Nothing is kept when the "
-                                  "page is closed, so save to come back later.")
+    st.download_button("Save", req.to_json(), mime="application/json",
+                       file_name=f"{slug(project) or 'sf-parking-request'}.json",
+                       help="Download everything entered so far. Nothing is kept when the "
+                            "page is closed, so save to come back later.")
 if st.session_state.get("open_error"):
     st.error(st.session_state.pop("open_error"))
 st.divider()
@@ -382,16 +378,14 @@ def add_planned(planned, text):
                 loc_.zones.setdefault(zid, {})["Use"] = p.use
                 if p.windows:
                     timed.setdefault(loc_.id, {}).setdefault(zid, []).extend(p.windows)
-    # Times shared by every imported zone become the location's dates (if it has none yet);
-    # otherwise each zone keeps its own.
+    # The times most imported zones share become the location's dates (if it has none yet);
+    # zones with other times keep their own.
     for loc_ in targets.values():
         zone_times = timed.get(loc_.id, {})
         schedules = list(zone_times.values())
-        unset = not any(w.date or w.start or w.end for w in loc_.dates)
-        if schedules and unset and all(ws == schedules[0] for ws in schedules):
-            loc_.dates = schedules[0]
-        else:
-            loc_.windows.update(zone_times)
+        if schedules and not any(w.date or w.start or w.end for w in loc_.dates):
+            loc_.dates = max(schedules, key=schedules.count)
+        loc_.windows.update({zid: ws for zid, ws in zone_times.items() if ws != loc_.dates})
     go(1)  # show the imported curbs on the map
     # Start every widget fresh from the request, as when a file is opened.
     st.session_state.current = first.id
@@ -419,7 +413,7 @@ def csv_import():
         st.warning(problem + ". This row will be skipped.")
     if planned:
         st.dataframe([{"Location": p.location or "(open location)", "Curb": p.label, "Use": p.use,
-                       "Blocks": ", ".join(z.block for line in p.lines for z in zoner().zones(line)),
+                       "Blocks": ", ".join(dict.fromkeys(z.block for line in p.lines for z in zoner().zones(line))),
                        "Dates & hours": "; ".join(dates_and_hours(w) for w in p.windows) or "-"}
                       for p in planned], hide_index=True, use_container_width=True)
         again = st.session_state.get("csv_done") == csv_text
