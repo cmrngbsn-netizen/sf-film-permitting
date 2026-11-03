@@ -255,9 +255,7 @@ def build_pdf(pages, project="", created=None):
             Paragraph("Parking Request" + (f" &nbsp;&middot;&nbsp; {escape(project)}" if project else ""),
                       heading),
             Paragraph(f"Created {created:%B %-d, %Y}"
-                      + (f" &nbsp;&middot;&nbsp; Page {n} of {len(pages)}" if len(pages) > 1 else "")
-                      + " &nbsp;&middot;&nbsp; Planning aid, not an official filing. Requests still go "
-                        "through Film SF and SFMTA.", small),
+                      + (f" &nbsp;&middot;&nbsp; Page {n} of {len(pages)}" if len(pages) > 1 else ""), small),
             FrameBreak(),
         ]
         image = Image.open(io.BytesIO(page.map_png))
