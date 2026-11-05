@@ -10,11 +10,10 @@ Run locally with: streamlit run app.py
 import io
 import re
 import sys
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import folium
-import pandas as pd
 import pypdfium2
 import streamlit as st
 import streamlit.components.v1 as components
@@ -38,7 +37,7 @@ if getattr(sys, "_sf_core_version", None) != code_version():
 
 from core.basemaps import OSM  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
-from core.bulk import EXAMPLE_BLOCKS, StreetRoutes, plan  # noqa: E402
+from core.bulk import EXAMPLE_BLOCKS, StreetRoutes, parse_time, plan  # noqa: E402
 from core.curbs import CurbZoner, block_labels, place_name, place_names  # noqa: E402
 from core.map_tools import MapTools  # noqa: E402
 from core.methods import methods  # noqa: E402
@@ -47,7 +46,7 @@ from core.request import (DEFAULT_COLOR, LINE_COLORS, REQUEST_FIELDS,  # noqa: E
                           STAR, TEXT, TEXT_COLOR, TEXT_PX, Arrow, Line, Marker, Request,
                           format_phone, text_size)
 from core.streets import StreetIndex  # noqa: E402
-from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest,  # noqa: E402
+from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest, clock,  # noqa: E402
                           dates_and_hours, summarize)
 
 SF_CENTER = [37.7749, -122.4194]
@@ -178,12 +177,6 @@ def window_columns():
             "End": st.column_config.TimeColumn(format="h:mm a", step=900)}
 
 
-def window_rows(windows):
-    """Date, Start and End rows for a table, with its columns even when there are no rows yet."""
-    return pd.DataFrame([{"Date": w.date, "Start": w.start, "End": w.end} for w in windows],
-                        columns=["Date", "Start", "End"])
-
-
 def zone_id(z):
     """Stable name for a zone, so edits survive drawing more lines."""
     if z.parts:
@@ -213,6 +206,48 @@ def bound_text(label, store, name, key, area=False, formatter=None, **kwargs):
         kwargs["on_change"] = lambda: st.session_state.__setitem__(key, formatter(st.session_state[key]))
     (st.text_area if area else st.text_input)(label, key=key, **kwargs)
     store[name] = st.session_state[key].strip() if not area else st.session_state[key]
+
+
+def time_field(label, key):
+    """A time typed any common way ("7am", "11:59 pm"), tidied to "7:00 AM" on leaving the field.
+    Returns the time, or None if it's blank or can't be read."""
+    def tidy():
+        try:
+            read = parse_time(st.session_state[key])
+        except ValueError:
+            return
+        st.session_state[key] = clock(read) if read else ""
+    st.text_input(label, key=key, on_change=tidy)
+    try:
+        return parse_time(st.session_state[key])
+    except ValueError:
+        st.caption(":red[Use a time like `7:00 AM`.]")
+        return None
+
+
+def days_fields(loc):
+    """A location's dates and hours, stacked to fit the side panel: one card per day, each with
+    its date, start and end. Sets loc.dates to the days that have anything filled in."""
+    days = st.session_state.setdefault(f"g{gen}-{loc.id}-days", dict(enumerate(loc.dates or [Window()])))
+
+    def add_day():
+        last = days[max(days)]
+        days[max(days) + 1] = Window(last.date and last.date + timedelta(days=1), last.start, last.end)
+
+    for n, day in list(days.items()):
+        keys = [f"g{gen}-{loc.id}-day{n}-{part}" for part in ("date", "start", "end")]
+        if keys[0] not in st.session_state:
+            st.session_state[keys[0]] = day.date
+            st.session_state[keys[1]] = clock(day.start) if day.start else ""
+            st.session_state[keys[2]] = clock(day.end) if day.end else ""
+        with st.container(border=True):
+            picked = st.date_input("Date", value=None, key=keys[0], format="MM/DD/YYYY")
+            days[n] = Window(picked, time_field("Start", keys[1]), time_field("End", keys[2]))
+            if len(days) > 1:
+                st.button("Remove day", key=f"g{gen}-{loc.id}-day{n}-remove", type="tertiary",
+                          icon=":material/close:", on_click=lambda n=n: days.pop(n))
+    st.button("Add day", key=f"g{gen}-{loc.id}-add-day", type="tertiary", icon=":material/add:", on_click=add_day)
+    loc.dates = [w for w in days.values() if w.date or w.start or w.end]
 
 
 def zone_defaults(z, color):
@@ -593,32 +628,27 @@ def locations_step():
         bound_text("Contact", loc.info, "Contact", f"g{gen}-{loc.id}-Contact")
         bound_text("Phone", loc.info, "Phone", f"g{gen}-{loc.id}-Phone", placeholder="(415) 555-0100",
                    formatter=format_phone)
-        scenes = {"text": "\n".join(loc.scenes)}
-        bound_text("Scenes", scenes, "text", f"g{gen}-{loc.id}-scenes", area=True, height=80,
-                   placeholder="INT City Hall - SHOOT", help="One scene per line.")
-        loc.scenes = [line.strip() for line in scenes["text"].splitlines() if line.strip()]
-        store = {"notes": loc.notes}
-        bound_text("Notes", store, "notes", f"g{gen}-{loc.id}-notes", area=True, height=80,
-                   placeholder="Anything the permit office should know")
-        loc.notes = store["notes"]
+        st.markdown("**Dates & hours**", help="For every zone at this location. To give one zone "
+                    "different times, tick Own times in the zones table. An end time earlier than "
+                    "the start means the next day.")
+        days_fields(loc)
         if loc.lines and not zones:
             st.warning("That line isn't on a street. Draw it along the curb.")
         elif zones:
             spaces = sum(int(r["Spaces"] or 0) for r in base_rows)
             st.markdown(f"**{spaces} spaces** · {len(zones)} zone{'s' if len(zones) != 1 else ''}")
 
-    dates_col, _ = st.columns([1, 1])
-    with dates_col:
-        st.markdown("**Dates & hours**", help="For every zone at this location. Add a row for each "
-                    "day. To give one zone different times, tick Own times in the zones table. An "
-                    "end time earlier than the start means the next day.")
-        dates_key = f"dates-g{gen}-{loc.id}"
-        picked = st.data_editor(
-            snapshot(dates_key, lambda: window_rows(loc.dates)),
-            key=dates_key, hide_index=True, use_container_width=True, num_rows="dynamic",
-            column_config=window_columns())
-        loc.dates = [Window(as_date(r.get("Date")), as_time(r.get("Start")), as_time(r.get("End")))
-                     for r in picked.to_dict("records")]
+    with map_col:
+        scenes_col, notes_col = st.columns(2)
+    with scenes_col:
+        scenes = {"text": "\n".join(loc.scenes)}
+        bound_text("Scenes", scenes, "text", f"g{gen}-{loc.id}-scenes", area=True, height=80,
+                   help="One scene per line.")
+        loc.scenes = [line.strip() for line in scenes["text"].splitlines() if line.strip()]
+    with notes_col:
+        store = {"notes": loc.notes}
+        bound_text("Notes", store, "notes", f"g{gen}-{loc.id}-notes", area=True, height=80)
+        loc.notes = store["notes"]
 
     if zones:
         labels = [f"{i} · {z.block} ({z.side})" for i, z in enumerate(zones, start=1)]
