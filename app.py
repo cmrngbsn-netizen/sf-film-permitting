@@ -186,7 +186,14 @@ def window_rows(windows):
 
 def zone_id(z):
     """Stable name for a zone, so edits survive drawing more lines."""
+    if z.parts:
+        return "+".join(zone_id(p) for p in z.parts)
     return f"{z.cnn}:{z.side_sign}:{round(z.along_m[0] / 5)}"
+
+
+def line_zones(points):
+    """The curb zones along a drawn line, one per block side."""
+    return curb_data().join_pieces(zoner().zones(points))
 
 
 def snapshot(key, build):
@@ -216,12 +223,28 @@ def zone_defaults(z, color):
             "Use": PICTURE if color == LINE_COLORS["Blue"] else WORKING}
 
 
+def adopt_pieces(loc, z, color, zid):
+    """Requests saved before pieces of a block side were joined have edits on each piece; the
+    joined zone starts from them."""
+    pieces = [(p, zone_id(p)) for p in z.parts]
+    if zid in loc.zones or not any(pid in loc.zones for _, pid in pieces):
+        return
+    rows = [{**zone_defaults(p, color), **loc.zones.get(pid, {})} for p, pid in pieces]
+    loc.zones[zid] = {"Meters": rows[0]["Meters"], "Use": rows[0]["Use"],
+                      "Spaces": sum(int(r["Spaces"] or 0) for r in rows)}
+    times = next((loc.windows[pid] for _, pid in pieces if pid in loc.windows), None)
+    if times is not None:
+        loc.windows[zid] = times
+
+
 def location_zones(loc):
     """A location's zones, their ids, line colors, and rows (city data plus the user's edits)."""
-    pairs = [(z, line.color) for line in loc.lines for z in zoner().zones(line.points)]
+    pairs = [(z, line.color) for line in loc.lines for z in line_zones(line.points)]
     zones = [z for z, _ in pairs]
     colors = [c for _, c in pairs]
     ids = [zone_id(z) for z in zones]
+    for z, c, zid in zip(zones, colors, ids):
+        adopt_pieces(loc, z, c, zid)
     rows = [{**zone_defaults(z, c), **loc.zones.get(zid, {})} for z, c, zid in zip(zones, colors, ids)]
     return zones, ids, colors, rows
 
@@ -241,7 +264,7 @@ def location_page(req, loc):
     # Each line whole, as it was drawn, with one count per block side it runs along.
     drawn, labels, spaces = [], [], iter(a.spaces for a in asks)
     for line in loc.lines:
-        on_line = zoner().zones(line.points)
+        on_line = line_zones(line.points)
         if on_line:
             drawn.append((tuple(line.points), line.color))
             labels += [(point, str(total), line.color)
@@ -382,7 +405,7 @@ def add_planned(planned, text):
         color = LINE_COLORS["Blue"] if p.use == PICTURE else DEFAULT_COLOR
         for pts in p.lines:
             loc_.lines.append(Line(pts, color))
-            for z in zoner().zones(pts):
+            for z in line_zones(pts):
                 zid = zone_id(z)
                 loc_.zones.setdefault(zid, {})["Use"] = p.use
                 if p.windows:
@@ -423,7 +446,7 @@ def csv_import():
         st.warning(problem + ". This row will be skipped.")
     if planned:
         st.dataframe([{"Location": p.location or "(open location)", "Curb": p.label, "Use": p.use,
-                       "Blocks": ", ".join(dict.fromkeys(z.block for line in p.lines for z in zoner().zones(line))),
+                       "Blocks": ", ".join(dict.fromkeys(z.block for line in p.lines for z in line_zones(line))),
                        "Dates & hours": "; ".join(dates_and_hours(w) for w in p.windows) or "-"}
                       for p in planned], hide_index=True, use_container_width=True)
         again = st.session_state.get("csv_done") == csv_text
@@ -546,7 +569,7 @@ def locations_step():
 
     # Until the user types their own, the Location name follows the lines ("Grant @ Washington").
     suggested = place_name(zones)
-    suggestions = place_names([zoner().zones(line.points) for line in loc.lines])
+    suggestions = place_names([line_zones(line.points) for line in loc.lines])
     name_key = f"g{gen}-{loc.id}-Location"
     if loc.auto_name and suggested and st.session_state.get(name_key, loc.info["Location"]) in (
             "", loc.info["Location"]) and loc.info["Location"] != suggested:

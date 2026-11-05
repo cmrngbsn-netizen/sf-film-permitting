@@ -3,7 +3,7 @@ Film SF and SFMTA name them ("800-890 Grant Ave, west side, 160 ft, 8 spaces")."
 
 import math
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from core.streets import M_PER_FT, pretty_street, to_latlon, to_xy
 
@@ -27,6 +27,8 @@ class CurbZone:
     side_sign: int = field(default=1, repr=False)    # +1 left of the block, -1 right
     along_m: tuple = field(default=(0, 0), repr=False)  # stretch of the block covered
     block_ft: float = field(default=0, repr=False)      # whole block, intersection to intersection
+    corners: tuple = field(default=("", ""), repr=False)  # cross streets at the block's two ends
+    parts: list = field(default_factory=list, repr=False)  # the pieces, when several were joined
 
 
 class CurbZoner:
@@ -118,6 +120,7 @@ class CurbZoner:
             side_sign=Counter(h[8] for h in run).most_common(1)[0][0],
             along_m=(min(alongs), max(alongs)),
             block_ft=self.index.seg_length[run[0][0]] / M_PER_FT,
+            corners=tuple(ends),
         )
 
     @staticmethod
@@ -129,6 +132,19 @@ class CurbZoner:
             out.extend((ax + (bx - ax) * k / n, ay + (by - ay) * k / n) for k in range(n))
         out.append(pts[-1])
         return out
+
+
+def joined(parts):
+    """One zone from neighboring pieces of a block side, e.g. where an alley splits it."""
+    if len(parts) == 1:
+        return parts[0]
+    first, last = parts[0], parts[-1]
+    # The cross streets at the outer ends, not the alleys in between.
+    start = next((c for c in first.corners if c not in parts[1].corners), first.corners[0])
+    end = next((c for c in last.corners if c not in parts[-2].corners), last.corners[1])
+    longest = max(parts, key=lambda p: p.length_ft)
+    return replace(first, between=f"{start} and {end}", length_ft=sum(p.length_ft for p in parts),
+                   points=[pt for p in parts for pt in p.points], near_cross=longest.near_cross, parts=parts)
 
 
 def block_labels(zones, spaces):

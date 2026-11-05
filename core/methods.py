@@ -32,12 +32,12 @@ City data last pulled **{built}**.
 
 1. A line is checked every {feet(SAMPLE_M)} ft or so and matched to the nearest street within
    {feet(MAX_OFFSET_M)} ft. Parts farther away are ignored.
-2. Each stretch between street corners or alleys becomes one zone. Passing an intersection or an
-   alley's mouth doesn't count as being on that street.
+2. Each block side becomes one zone. Passing an intersection or an alley's mouth doesn't count as
+   being on that street. Where an alley splits a block, the pieces are joined, unless one is
+   metered and the other isn't.
 3. The side (north, south, east or west) comes from which side of the street's centerline the
    line is on, and the direction the street mostly runs.
-4. A block is named by its hundred range, like 800-890 Grant Ave, even where an alley splits it.
-   On the PDF, pieces of one block side are added together.
+4. A block is named by its hundred range, like 800-890 Grant Ave.
 
 #### How spaces are counted
 

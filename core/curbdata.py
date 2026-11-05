@@ -5,7 +5,7 @@ import json
 from collections import Counter
 from dataclasses import dataclass, field
 
-from core.curbs import SPACE_FT
+from core.curbs import SPACE_FT, joined
 from core.streets import DATA_DIR
 
 # Curb items this far past either end of a drawn zone still count, so a meter or
@@ -102,19 +102,37 @@ class CurbData:
         self.blocks = data["blocks"]
         self.census = data.get("census", {})  # cnn -> [legal spaces, both sides; year]
 
+    def join_pieces(self, zones):
+        """A line's zones with neighboring pieces of a block side joined into one, as long as
+        they are all metered or all unmetered (the two are written separately on a request)."""
+        groups = []
+        for z in zones:
+            same = groups and (groups[-1][0].block, groups[-1][0].side) == (z.block, z.side)
+            if same and self.lookup(groups[-1][0]).metered == self.lookup(z).metered:
+                groups[-1].append(z)
+            else:
+                groups.append([z])
+        return [joined(g) for g in groups]
+
     def lookup(self, zone):
         info = CurbInfo()
-        lo, hi = zone.along_m
-        for side, along, kind, feet in self.blocks.get(str(zone.cnn), []):
-            if side != zone.side_sign or not lo - END_MARGIN_M <= along <= hi + END_MARGIN_M:
-                continue
-            source, _, name = kind.partition(":")
-            if source == "meter":
-                info.meters[name] += 1
+        shares = []
+        for part in zone.parts or [zone]:
+            lo, hi = part.along_m
+            for side, along, kind, feet in self.blocks.get(str(part.cnn), []):
+                if side != part.side_sign or not lo - END_MARGIN_M <= along <= hi + END_MARGIN_M:
+                    continue
+                source, _, name = kind.partition(":")
+                if source == "meter":
+                    info.meters[name] += 1
+                else:
+                    info.zones.append((CURB_TYPES.get(name, name.lower()), feet))
+            # The census counts both sides of the whole block; this stretch gets its share.
+            if str(part.cnn) in self.census and part.block_ft > 0:
+                spaces, info.census_year = self.census[str(part.cnn)]
+                shares.append(spaces * min(1.0, part.length_ft / (2 * part.block_ft)))
             else:
-                info.zones.append((CURB_TYPES.get(name, name.lower()), feet))
-        # The census counts both sides of the whole block; this zone gets its share.
-        if str(zone.cnn) in self.census and zone.block_ft > 0:
-            spaces, info.census_year = self.census[str(zone.cnn)]
-            info.census = spaces * min(1.0, zone.length_ft / (2 * zone.block_ft))
+                shares.append(None)
+        if None not in shares:
+            info.census = sum(shares)
         return info

@@ -77,3 +77,25 @@ def test_metered_curb_ignores_census():
     info = CurbInfo(Counter({"Grey": 6}), census=3.0, census_year=2010)
     assert info.suggested_spaces(200) == 6
     assert "census" not in info.describe()
+
+
+def test_pieces_of_a_block_side_join_into_one_zone():
+    from core.bulk import StreetRoutes, plan
+    from core.curbs import CurbZoner
+    from core.streets import StreetIndex
+
+    index = StreetIndex()
+    zoner, data, routes = CurbZoner(index), CurbData(), StreetRoutes(index)
+    line = plan("Block,Side\n800-890 Washington St,south\n", routes)[0][0].lines[0]
+    pieces = zoner.zones(line)
+    zones = data.join_pieces(pieces)
+    assert len(pieces) > 1 and len(zones) < len(pieces)
+    # Joining changes the rows, not what's on the curb.
+    assert sum(data.lookup(z).suggested_spaces(z.length_ft) for z in zones) == sum(
+        data.lookup(p).suggested_spaces(p.length_ft) for p in pieces)
+    assert round(sum(z.length_ft for z in zones)) == round(sum(p.length_ft for p in pieces))
+    # Metered and unmetered stay apart: a request writes them separately.
+    for z in zones:
+        assert len({data.lookup(p).metered for p in z.parts or [z]}) == 1
+    if len(zones) == 1:
+        assert set(zones[0].between.split(" and ")) == {"Grant Ave", "Stockton St"}
