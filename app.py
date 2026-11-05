@@ -10,8 +10,9 @@ Run locally with: streamlit run app.py
 import io
 import re
 import sys
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from pathlib import Path
+from time import time as now
 
 import folium
 import pypdfium2
@@ -39,6 +40,8 @@ from core.basemaps import OSM  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
 from core.bulk import EXAMPLE_BLOCKS, StreetRoutes, parse_time, plan  # noqa: E402
 from core.curbs import CurbZoner, block_labels, place_name, place_names  # noqa: E402
+from core.days import (WEEKDAYS, date_range, days_between, group_dates, group_days,  # noqa: E402
+                       group_hours, merge_days, short_day)
 from core.map_tools import MapTools  # noqa: E402
 from core.methods import methods  # noqa: E402
 from core.pdf import Box, Page, build_pdf, render_map  # noqa: E402
@@ -47,13 +50,16 @@ from core.request import (DEFAULT_COLOR, LINE_COLORS, REQUEST_FIELDS,  # noqa: E
                           format_phone, text_size)
 from core.streets import StreetIndex  # noqa: E402
 from core.summary import (METERS, PICTURE, USES, WORKING, Window, ZoneRequest, clock,  # noqa: E402
-                          dates_and_hours, summarize)
+                          summarize)
 
 SF_CENTER = [37.7749, -122.4194]
 SF_BOUNDS = [[37.70, -122.53], [37.84, -122.35]]  # keeps the map panned to the city
 COLOR_NAMES = {hex_: name for name, hex_ in LINE_COLORS.items()}
 
+MAX_LOCATION_BUTTONS = 4  # more than this and the locations are picked from a list
+
 st.set_page_config(page_title="SF Film Parking Request", layout="wide", initial_sidebar_state="collapsed")
+autosave = components.declare_component("autosave", path=str(Path(__file__).parent / "components" / "autosave"))
 
 
 # Cached street objects are keyed on code_version() too, so they're rebuilt with the new code.
@@ -184,9 +190,15 @@ def zone_id(z):
     return f"{z.cnn}:{z.side_sign}:{round(z.along_m[0] / 5)}"
 
 
-def line_zones(points):
-    """The curb zones along a drawn line, one per block side."""
+@st.cache_resource(show_spinner=False, max_entries=2000)
+def _line_zones(points, version):
     return curb_data().join_pieces(zoner().zones(points))
+
+
+def line_zones(points):
+    """The curb zones along a drawn line, one per block side. Kept, so a page with many locations
+    doesn't work them all out again on every click."""
+    return _line_zones(tuple(tuple(p) for p in points), code_version())
 
 
 def snapshot(key, build):
@@ -208,46 +220,103 @@ def bound_text(label, store, name, key, area=False, formatter=None, **kwargs):
     store[name] = st.session_state[key].strip() if not area else st.session_state[key]
 
 
-def time_field(label, key):
-    """A time typed any common way ("7am", "11:59 pm"), tidied to "7:00 AM" on leaving the field.
-    Returns the time, or None if it's blank or can't be read."""
-    def tidy():
-        try:
-            read = parse_time(st.session_state[key])
-        except ValueError:
-            return
-        st.session_state[key] = clock(read) if read else ""
-    st.text_input(label, key=key, on_change=tidy)
+def read_time(key):
+    """The time typed in a field ("7am", "11:59 pm"): (time or None, whether it could be read)."""
     try:
-        return parse_time(st.session_state[key])
+        return parse_time(st.session_state[key]), True
     except ValueError:
-        st.caption(":red[Use a time like `7:00 AM`.]")
-        return None
+        return None, False
 
 
-def days_fields(loc):
-    """A location's dates and hours, stacked to fit the side panel: one card per day, each with
-    its date, start and end. Sets loc.dates to the days that have anything filled in."""
-    days = st.session_state.setdefault(f"g{gen}-{loc.id}-days", dict(enumerate(loc.dates or [Window()])))
+def day_group(loc, group):
+    """A run of days as one short row, which opens to change its hours or remove days."""
+    first = group[0]
+    base = f"g{gen}-{loc.id}-days-{first.date}-{first.start}-{first.end}-{len(group)}"
+    with st.expander(f"**{group_dates(group)}**  \n{group_hours(group)}"):
+        targets = group
+        if len(group) > 1:
+            names = [f"All {len(group)} days", *(short_day(w.date) for w in group)]
+            picked = names.index(st.selectbox("Change", names, key=f"{base}-which"))
+            targets = group if picked == 0 else [group[picked - 1]]
+        keys = {"start": f"{base}-start", "end": f"{base}-end"}
+        for part, key in keys.items():
+            if key not in st.session_state:
+                value = getattr(first, part)
+                st.session_state[key] = clock(value) if value else ""
 
-    def add_day():
-        last = days[max(days)]
-        days[max(days) + 1] = Window(last.date and last.date + timedelta(days=1), last.start, last.end)
+        def apply_hours():
+            (start, ok_start), (end, ok_end) = read_time(keys["start"]), read_time(keys["end"])
+            if ok_start and ok_end:
+                st.session_state[keys["start"]] = clock(start) if start else ""
+                st.session_state[keys["end"]] = clock(end) if end else ""
+                loc.dates = [Window(w.date, start, end) if any(w is t for t in targets) else w
+                             for w in loc.dates]
 
-    for n, day in list(days.items()):
-        keys = [f"g{gen}-{loc.id}-day{n}-{part}" for part in ("date", "start", "end")]
-        if keys[0] not in st.session_state:
-            st.session_state[keys[0]] = day.date
-            st.session_state[keys[1]] = clock(day.start) if day.start else ""
-            st.session_state[keys[2]] = clock(day.end) if day.end else ""
-        with st.container(border=True):
-            picked = st.date_input("Date", value=None, key=keys[0], format="MM/DD/YYYY")
-            days[n] = Window(picked, time_field("Start", keys[1]), time_field("End", keys[2]))
-            if len(days) > 1:
-                st.button("Remove day", key=f"g{gen}-{loc.id}-day{n}-remove", type="tertiary",
-                          icon=":material/close:", on_click=lambda n=n: days.pop(n))
-    st.button("Add day", key=f"g{gen}-{loc.id}-add-day", type="tertiary", icon=":material/add:", on_click=add_day)
-    loc.dates = [w for w in days.values() if w.date or w.start or w.end]
+        def remove_days():
+            loc.dates = [w for w in loc.dates if not any(w is t for t in targets)]
+
+        st.text_input("Start", key=keys["start"], on_change=apply_hours)
+        st.text_input("End", key=keys["end"], on_change=apply_hours)
+        if not (read_time(keys["start"])[1] and read_time(keys["end"])[1]):
+            st.caption(":red[Use a time like `7:00 AM`.]")
+        st.button(f"Remove {'these days' if len(targets) > 1 else 'this day'}", key=f"{base}-remove",
+                  type="tertiary", icon=":material/close:", on_click=remove_days)
+
+
+def add_days(loc):
+    """The form for adding any number of days at once, and copying another location's."""
+    round_key = f"g{gen}-{loc.id}-add-round"  # a new round of keys empties the form
+    base = f"{round_key}-{st.session_state.setdefault(round_key, 0)}"
+    problem_key = f"{round_key}-problem"
+
+    def submit():
+        first, last = st.session_state[f"{base}-first"], st.session_state[f"{base}-last"]
+        (start, ok_start), (end, ok_end) = read_time(f"{base}-start"), read_time(f"{base}-end")
+        last = last or first
+        if not first:
+            problem = "Pick the first day."
+        elif last < first:
+            problem = "The last day is before the first."
+        elif not (ok_start and ok_end):
+            problem = "Use a time like `7:00 AM`."
+        else:
+            days = days_between(first, last, st.session_state[f"{base}-week"])
+            problem = None if days else "Those days of the week aren't in those dates."
+        st.session_state[problem_key] = problem
+        if problem is None:
+            merge_in(loc, [Window(day, start, end) for day in days])
+            st.session_state[round_key] += 1
+
+    with st.expander("Add days", icon=":material/add:", expanded=not loc.dates):
+        with st.form(f"{base}-form", border=False):
+            st.date_input("First day", value=None, key=f"{base}-first", format="MM/DD/YYYY")
+            st.date_input("Last day", value=None, key=f"{base}-last", format="MM/DD/YYYY",
+                          help="Leave blank for a single day.")
+            start_col, end_col = st.columns(2, gap="small")
+            start_col.text_input("Start", key=f"{base}-start")
+            end_col.text_input("End", key=f"{base}-end")
+            st.pills("Days of the week", WEEKDAYS, selection_mode="multi", default=WEEKDAYS, key=f"{base}-week")
+            st.form_submit_button("Add these days", use_container_width=True, on_click=submit)
+        if st.session_state.get(problem_key):
+            st.caption(f":red[{st.session_state[problem_key]}]")
+        others = [place for place in req.locations if place.id != loc.id and place.dates]
+        if others:
+            copy_key = f"{base}-copy"
+
+            def copy_days():
+                source = next(place for place in others if place.id == st.session_state[copy_key])
+                merge_in(loc, source.dates)
+                st.session_state[copy_key] = None
+
+            st.selectbox("Copy days from", [place.id for place in others], index=None, key=copy_key,
+                         on_change=copy_days, placeholder="Another location",
+                         format_func=lambda i: next(place.title for place in others if place.id == i))
+
+
+def merge_in(loc, days):
+    loc.dates, replaced = merge_days(loc.dates, days)
+    if replaced:
+        st.session_state.days_note = f"Changed the hours on {replaced} day{'s' if replaced != 1 else ''} already booked."
 
 
 def zone_defaults(z, color):
@@ -361,17 +430,33 @@ def picked_step():
     go(STEPS.index(st.session_state.step_pick) if st.session_state.step_pick else None)
 
 
+def load_request(text):
+    """Replaces the request being worked on. Raises ValueError if the text isn't a saved request."""
+    st.session_state.request = Request.from_json(text)
+    st.session_state.gen += 1
+    st.session_state.snapshots = {}
+
+
 def open_request(key):
     upload = st.session_state[key]
     if upload is None:
         return
     try:
-        st.session_state.request = Request.from_json(upload.getvalue().decode("utf-8"))
+        load_request(upload.getvalue().decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as e:
         st.session_state.open_error = f"Couldn't open that file: {e}"
         return
-    st.session_state.gen += 1
-    st.session_state.snapshots = {}
+    st.session_state.file_saved = (now(), st.session_state.request.to_json())
+
+
+def ago(seconds):
+    minutes = round(seconds / 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours = round(minutes / 60)
+    return f"{hours} hour{'s' if hours != 1 else ''} ago" if hours < 24 else "over a day ago"
 
 
 # Top bar: name, steps, open and save.
@@ -387,18 +472,10 @@ with steps_col:
     st.session_state.step_pick = STEPS[st.session_state.step]
     st.segmented_control("Step", STEPS, key="step_pick", on_change=picked_step,
                          label_visibility="collapsed")
-# A row that keeps both buttons at their own width, wrapping instead of squeezing their labels.
-with file_col.container(horizontal=True, horizontal_alignment="right"):
-    with st.popover("Open"):
-        st.file_uploader("Open a saved request (.json)", type="json", key=f"g{gen}-open",
-                         on_change=open_request, args=(f"g{gen}-open",))
-    st.download_button("Save", req.to_json(), mime="application/json",
-                       file_name=f"{slug(project) or 'sf-parking-request'}.json",
-                       help="Download everything entered so far. Nothing is kept when the "
-                            "page is closed, so save to come back later.")
 if st.session_state.get("open_error"):
     st.error(st.session_state.pop("open_error"))
 st.divider()
+notice = st.container()  # the offer to restore unsaved work, filled in at the end
 
 # Which location is open. Kept in plain session state, not in a picker widget: a picker
 # resets itself when a location is renamed, which would switch locations mid-edit.
@@ -468,7 +545,7 @@ def csv_import():
     st.caption("One row per curb, with its **Side** (north, south, east, west or both) and either "
                "a **Block**, whole or part (`800-890 Grant Ave`, `800-850 Grant Ave`), or a **Street** "
                "with the cross streets it runs **From** and **To**. **Location**, **Use**, **Date**, "
-               "**Start** and **End** are optional.")
+               "**Start** and **End** are optional. **Date** can be several days: `11/02/26-11/06/26`.")
     upload_csv = st.file_uploader("CSV file", type=["csv", "txt"], key="csv-file",
                                   label_visibility="collapsed")
     if upload_csv is not None and st.session_state.get("csv-file-seen") != upload_csv.file_id:
@@ -482,7 +559,7 @@ def csv_import():
     if planned:
         st.dataframe([{"Location": p.location or "(open location)", "Curb": p.label, "Use": p.use,
                        "Blocks": ", ".join(dict.fromkeys(z.block for line in p.lines for z in line_zones(line))),
-                       "Dates & hours": "; ".join(dates_and_hours(w) for w in p.windows) or "-"}
+                       "Dates & hours": "; ".join(f"{group_dates(g)}, {group_hours(g)}" for g in group_days(p.windows)) or "-"}
                       for p in planned], hide_index=True, use_container_width=True)
         again = st.session_state.get("csv_done") == csv_text
         if st.button(f"Add these {len(planned)} curb{'s' if len(planned) != 1 else ''} "
@@ -550,12 +627,27 @@ def locations_step():
     if st.session_state.get("csv_added"):
         st.toast(st.session_state.pop("csv_added"))
 
-    # Location strip: one button per location (one PDF page each), add, and more.
-    buttons = st.columns([2] * len(req.locations) + [1.2, 0.5])
-    for col, (n, place) in zip(buttons, enumerate(req.locations, start=1)):
-        col.button(f"{n} · {place.title}", key=f"g{gen}-open-{place.id}", use_container_width=True,
-                   type="primary" if place.id == st.session_state.current else "secondary",
-                   on_click=open_location, args=(place.id,))
+    # Location strip: one button per location (one PDF page each), add, and more. A big shoot
+    # picks from a list instead, which has room for each location's name, dates and spaces.
+    if len(req.locations) <= MAX_LOCATION_BUTTONS:
+        buttons = st.columns([2] * len(req.locations) + [1.2, 0.5])
+        for col, (n, place) in zip(buttons, enumerate(req.locations, start=1)):
+            col.button(f"{n} · {place.title}", key=f"g{gen}-open-{place.id}", use_container_width=True,
+                       type="primary" if place.id == st.session_state.current else "secondary",
+                       on_click=open_location, args=(place.id,))
+    else:
+        buttons = st.columns([6, 1.2, 0.5])
+        details = {}
+        for n, place in enumerate(req.locations, start=1):
+            spaces = sum(int(r["Spaces"] or 0) for r in location_zones(place)[3])
+            details[place.id] = " · ".join(filter(None, [f"{n} · {place.title}", date_range(place.dates),
+                                                         f"{spaces} spaces" if spaces else ""]))
+        ids = list(details)
+        picked = buttons[0].selectbox("Location", ids, index=ids.index(st.session_state.current),
+                                      format_func=details.get, label_visibility="collapsed")
+        if picked != st.session_state.current:
+            st.session_state.current = picked
+            st.rerun()
     with buttons[-2].popover("Add location", icon=":material/add:", use_container_width=True):
         st.button("New location", icon=":material/add_location_alt:", on_click=add_location,
                   use_container_width=True)
@@ -631,7 +723,11 @@ def locations_step():
         st.markdown("**Dates & hours**", help="For every zone at this location. To give one zone "
                     "different times, tick Own times in the zones table. An end time earlier than "
                     "the start means the next day.")
-        days_fields(loc)
+        for group in group_days(loc.dates):
+            day_group(loc, group)
+        add_days(loc)
+        if st.session_state.get("days_note"):
+            st.toast(st.session_state.pop("days_note"))
         if loc.lines and not zones:
             st.warning("That line isn't on a street. Draw it along the curb.")
         elif zones:
@@ -731,11 +827,71 @@ def review_step():
     button.download_button("Download PDF", type="primary", mime="application/pdf", data=pdf,
                            icon=":material/download:", use_container_width=True,
                            file_name=f"{slug(project) or 'sf-parking-request'}-{date.today():%Y-%m-%d}.pdf")
+    if len(pages) > 1:
+        st.markdown(" · ".join(f"[{n} · {loc_.title}](#page-{n})" for n, (loc_, _) in enumerate(pages, start=1)))
+    left_out = [loc_.title for loc_ in req.locations if not any(loc_ is shown for shown, _ in pages)]
+    if left_out:
+        st.caption("No curb lines yet, so no page: " + ", ".join(left_out))
     for n, (image, (loc_, _)) in enumerate(zip(pdf_pages(pdf), pages), start=1):
+        st.markdown(f'<div id="page-{n}"></div>', unsafe_allow_html=True)
         st.image(image, caption=f"Page {n} · {loc_.title}", use_container_width=True)
 
 
 [start_step, locations_step, review_step][st.session_state.step]()
+
+# Open, Save and autosave come after the step has run, so they have what was just entered.
+work = req.to_json()
+stored = autosave(data=work if req.has_content() else None, clear=st.session_state.pop("autosave_clear", False),
+                  key="autosave", default=None) or {}
+
+
+def mark_saved(text):
+    st.session_state.file_saved = (now(), text)
+
+
+with file_col:
+    # A row that keeps both buttons at their own width, wrapping instead of squeezing their labels.
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        with st.popover("Open"):
+            st.file_uploader("Open a saved request (.json)", type="json", key=f"g{gen}-open",
+                             on_change=open_request, args=(f"g{gen}-open",))
+        st.download_button("Save", work, mime="application/json", on_click=mark_saved, args=(work,),
+                           file_name=f"{slug(project) or 'sf-parking-request'}.json",
+                           help="Download everything entered so far, to keep a copy or move to "
+                                "another computer.")
+    if req.has_content():
+        saved_at, saved_work = st.session_state.get("file_saved", (None, None))
+        here = "Can't autosave in this browser" if stored.get("blocked") else "Autosaved in this browser"
+        if saved_at is None:
+            status = f"{here}. No file saved yet."
+        elif saved_work == work:
+            status = f"{here}. File saved {ago(now() - saved_at)}."
+        else:
+            status = f"{here}. Changes since the file saved {ago(now() - saved_at)}."
+        st.markdown(f"<div style='text-align:right;font-size:0.75rem;opacity:0.65'>{status}</div>",
+                    unsafe_allow_html=True)
+
+# Work left in this browser by an earlier visit: offered until they start something new.
+if stored.get("data") and not req.has_content() and not st.session_state.get("autosave_answered"):
+    def restore():
+        st.session_state.autosave_answered = True
+        try:
+            load_request(stored["data"])
+        except ValueError:
+            st.session_state.open_error = "Couldn't restore that work."
+            st.session_state.autosave_clear = True
+            return
+        go(1)
+
+    def discard():
+        st.session_state.autosave_answered = True
+        st.session_state.autosave_clear = True
+
+    with notice.container(border=True):
+        text, yes, no = st.columns([5, 1, 1], vertical_alignment="center")
+        text.markdown(f"**You have unsaved work in this browser** from {ago(now() - stored.get('at', 0) / 1000)}.")
+        yes.button("Restore", type="primary", use_container_width=True, on_click=restore)
+        no.button("Discard", use_container_width=True, on_click=discard)
 
 # Formats the Phone field while it's typed: digits only, "(415) 555-0100" (as format_phone does
 # when the field is saved). Streamlit text inputs can't do this, so a script in a hidden frame

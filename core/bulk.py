@@ -14,6 +14,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, time
 
+from core.days import days_between
 from core.streets import pretty_street, street_key, to_latlon
 from core.summary import USES, WORKING, Window
 
@@ -27,7 +28,7 @@ Chinatown, Grant Ave, Clay St, Jackson St, west, Working vehicles, 11/05/26, 6:0
 EXAMPLE_BLOCKS = """Location, Block, Side, Use, Date, Start, End
 City Hall, 400-490 McAllister St, north, Working vehicles, 11/03/26, 7:00 AM, 11:59 PM
 City Hall, 200-250 Larkin St, west, Picture, 11/03/26, 7:00 AM, 11:59 PM
-Chinatown, 800-890 Grant Ave, west, Working vehicles, 11/04/26, 6:00 AM, 10:00 PM
+Chinatown, 800-890 Grant Ave, west, Working vehicles, 11/04/26-11/06/26, 6:00 AM, 10:00 PM
 """
 
 CURB_OFFSET_M = 6   # a curb line runs this far off the street's centerline
@@ -60,6 +61,29 @@ def parse_date(text):
         except ValueError:
             pass
     raise ValueError(f'date "{text}" (use 11/03/26)')
+
+
+def parse_dates(text):
+    """One date or a range -> [date, ...]: "11/03/26", "11/02/26-11/06/26", "11/02 to 11/06/26"."""
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        return [parse_date(text)]
+    except ValueError:
+        pass
+    # Hyphens can also be inside a date, so try each place the range could split.
+    for found in re.finditer(r"\s+to\s+|\s*-\s*", text, re.I):
+        left, right = text[:found.start()], text[found.end():]
+        try:
+            last = parse_date(right)
+            first = parse_date(left if left.count("/") == 2 or "/" not in left else f"{left}/{last:%y}")
+        except ValueError:
+            continue
+        if last < first:
+            raise ValueError(f'dates "{text}" run backwards')
+        return days_between(first, last)
+    raise ValueError(f'date "{text}" (use 11/03/26, or 11/02/26-11/06/26 for several days)')
 
 
 def parse_time(text):
@@ -329,7 +353,7 @@ def plan(text, routes):
             if not side:
                 raise ValueError(f'side "{row["Side"]}" (use north, south, east, west or both)')
             use = parse_use(row.get("Use", ""))
-            day = parse_date(row.get("Date", ""))
+            days = parse_dates(row.get("Date", ""))
             start, end = parse_time(row.get("Start", "")), parse_time(row.get("End", ""))
             if by_block:
                 blocks, own = routes.block(row["Block"])
@@ -356,6 +380,8 @@ def plan(text, routes):
                 planned[key] = Planned(location, f"{name}, {s} side", s, use, lines)
             p = planned[key]
             p.rows.append(n)
-            if day or start or end:
-                p.windows.append(Window(day, start, end))
+            if days:
+                p.windows += [Window(day, start, end) for day in days]
+            elif start or end:
+                p.windows.append(Window(None, start, end))
     return list(planned.values()), errors

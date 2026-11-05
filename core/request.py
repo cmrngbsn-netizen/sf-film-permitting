@@ -103,6 +103,12 @@ class Request:
     info: dict = field(default_factory=lambda: {name: "" for name in REQUEST_FIELDS})
     locations: list = field(default_factory=lambda: [Location()])
 
+    def has_content(self):
+        """Whether anything has been entered yet."""
+        return any(self.info.values()) or any(
+            any(loc.info.values()) or loc.notes or loc.scenes or loc.lines or loc.arrows
+            or loc.markers or loc.dates for loc in self.locations)
+
     def add_location(self):
         """A new empty location, carrying over the last location's contact."""
         last = self.locations[-1].info if self.locations else {}

@@ -4,7 +4,7 @@ from datetime import date, time
 
 import pytest
 
-from core.bulk import EXAMPLE, EXAMPLE_BLOCKS, StreetRoutes, parse_date, parse_time, plan
+from core.bulk import EXAMPLE, EXAMPLE_BLOCKS, StreetRoutes, parse_date, parse_dates, parse_time, plan
 from core.curbs import CurbZoner
 from core.streets import StreetIndex
 from core.summary import PICTURE, WORKING
@@ -132,6 +132,19 @@ def test_block_errors_name_the_row(routes):
     assert errors[2] == 'Row 4: no street called "Nowhere St"'
     assert errors[3].startswith('Row 5: block "890-800 Grant" runs backwards')
     assert errors[4] == "Row 6: missing Side"
+
+
+def test_date_ranges(routes):
+    assert [d.day for d in parse_dates("11/02/26-11/06/26")] == [2, 3, 4, 5, 6]
+    assert [d.day for d in parse_dates("11/02/26 - 11/04/26")] == [2, 3, 4]
+    assert [d.day for d in parse_dates("11/02/26 to 11/03/26")] == [2, 3]
+    assert [d.day for d in parse_dates("11/02-11/04/26")] == [2, 3, 4]
+    assert [d.day for d in parse_dates("2026-11-02-2026-11-03")] == [2, 3]
+    assert [d.day for d in parse_dates("11-02-26")] == [2] and parse_dates("") == []
+    planned, errors = plan("Block,Side,Date,Start,End\n800-890 Grant Ave,west,11/02/26-11/04/26,7am,7pm\n"
+                           "800-890 Grant Ave,east,11/06/26-11/02/26,,\n", routes)
+    assert len(planned[0].windows) == 3 and planned[0].windows[2].end == time(19)
+    assert errors == ['Row 3: dates "11/06/26-11/02/26" run backwards']
 
 
 def test_dates_and_times():

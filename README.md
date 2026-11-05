@@ -11,7 +11,8 @@ request PDF in the format Film SF expects, with one page per location.
    once; a zone can have its own.
 3. **Review & PDF**: preview every page, then download the PDF.
 
-Requests are saved to and opened from a `.json` file (Save / Open in the top bar).
+Work is kept in the browser as it's entered, and offered back when the page is opened again.
+Requests can also be saved to and opened from a `.json` file (Save / Open in the top bar).
 
 ## Run locally
 
@@ -36,6 +37,8 @@ python3 -m venv .venv
 - `core/curbdata.py`: meters, color curbs and the parking census for a zone.
 - `core/summary.py`, `core/pdf.py`: Film SF wording and the PDF.
 - `core/request.py`: the request and its save file. `core/bulk.py`: CSV import.
+- `core/days.py`: shoot days as short groups, and adding many at once.
+- `components/autosave/`: keeps the request in the browser's storage.
 - `core/methods.py`: the Sources & methods text shown in the app.
 - `scripts/build_data.py`: rebuilds `data/` and `static/` from city data.
 
