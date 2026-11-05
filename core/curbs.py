@@ -11,7 +11,7 @@ from core.streets import M_PER_FT, pretty_street, to_latlon, to_xy
 SPACE_FT = 20       # one parking space; 160 ft on a Film SF sign is 8 spaces
 SAMPLE_M = 2        # the drawn line is checked every this many meters
 MAX_OFFSET_M = 25   # a drawn point farther than this from any street is ignored
-MIN_ZONE_M = 6      # shorter runs are noise, e.g. a line cutting across an intersection
+MIN_ZONE_M = 6      # shorter runs are noise, e.g. a line crossing an intersection or alley
 
 
 @dataclass
@@ -76,7 +76,9 @@ class CurbZoner:
                 runs[-1].append(h)
             else:
                 runs.append([h])
-        runs = [r for r in runs if len(r) * SAMPLE_M >= MIN_ZONE_M]
+        # A run counts by how far it goes along its block: a line passing the mouth of an alley
+        # is briefly closest to the alley, but doesn't travel along it.
+        runs = [r for r in runs if max(h[1] for h in r) - min(h[1] for h in r) + SAMPLE_M >= MIN_ZONE_M]
         merged = []
         for r in runs:
             if merged and merged[-1][0][0] == r[0][0]:
@@ -127,6 +129,16 @@ class CurbZoner:
             out.extend((ax + (bx - ax) * k / n, ay + (by - ay) * k / n) for k in range(n))
         out.append(pts[-1])
         return out
+
+
+def block_labels(zones, spaces):
+    """Where a drawn line's space counts go on a map: [(point, total), ...], one per block side
+    it runs along, at the middle of that stretch."""
+    groups = {}
+    for z, n in zip(zones, spaces):
+        points, total = groups.get((z.block, z.side), ([], 0))
+        groups[(z.block, z.side)] = (points + z.points, total + n)
+    return [(points[len(points) // 2], total) for points, total in groups.values()]
 
 
 # Street types left off in a short place name ("Grant @ Washington"), as on the Film SF slides.

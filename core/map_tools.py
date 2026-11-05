@@ -105,6 +105,7 @@ STYLE = """
 .sf-help .sf-hrow{display:flex;gap:10px;align-items:flex-start;margin:7px 0;font-size:12px;line-height:1.35;color:#3a3a3c}
 .sf-help .sf-hrow svg{width:18px;height:18px;flex:none;fill:none;stroke:#1d1d1f;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .sf-help .sf-x{position:absolute;top:8px;right:10px;font-size:18px;color:#8e8e93}
+.leaflet-editing-icon.sf-point{border-radius:50%;background:#fff;border:1.5px solid #1d1d1f;box-sizing:border-box}
 .sf-drawing .leaflet-marker-icon:not(.leaflet-mouse-marker):not(.leaflet-editing-icon){pointer-events:none}
 .sf-erasing .leaflet-interactive{cursor:pointer!important}
 .sf-doomed{stroke:#ff3b30;stroke-dasharray:7 5}
@@ -420,7 +421,12 @@ class MapTools(MacroElement):
 
           function startDraw() {
             if (tool === "curb" || tool === "arrow") {
-              handler = new L.Draw.Polyline(map, {shapeOptions: {stroke: true, fill: false, clickable: true,
+              const point = function (size) {
+                return new L.DivIcon({iconSize: new L.Point(size, size),
+                                      className: "leaflet-div-icon leaflet-editing-icon sf-point"});
+              };
+              handler = new L.Draw.Polyline(map, {icon: point(7), touchIcon: point(14),
+                shapeOptions: {stroke: true, fill: false, clickable: true,
                 color: tool === "arrow" ? ARROW : color, weight: tool === "arrow" ? 4 : 5, opacity: 0.9,
                 lineCap: tool === "arrow" ? "butt" : "round"}});
             } else {

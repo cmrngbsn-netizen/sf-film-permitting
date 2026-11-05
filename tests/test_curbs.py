@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.curbs import CurbZoner, place_name, place_names, short_street
+from core.curbs import CurbZoner, block_labels, place_name, place_names, short_street
 from core.streets import StreetIndex, to_latlon
 
 
@@ -94,3 +94,13 @@ def test_place_names_for_several_lines(zoner):
     assert names[0] == "Grant @ Washington" and names[-1] == " / ".join(names[:-1])
     assert place_names([near_wash, near_wash]) == ["Grant @ Washington"]
     assert place_names([[]]) == []
+
+
+def test_crossing_an_alley_is_not_a_zone(zoner):
+    # 800 Washington has Spofford, Ross and Waverly opening onto it.
+    stockton, grant = corner(zoner, "WASHINGTON ST", "STOCKTON ST"), corner(zoner, "WASHINGTON ST", "GRANT AVE")
+    zones = zoner.zones(curb_line(stockton, grant, 6, frac=(0.1, 0.9)))
+    assert len(zones) > 1 and {z.block for z in zones} == {"800-890 Washington St"}
+    # One count for the block side on the map, however many pieces the alleys make.
+    labels = block_labels(zones, [2] * len(zones))
+    assert [total for _, total in labels] == [2 * len(zones)]

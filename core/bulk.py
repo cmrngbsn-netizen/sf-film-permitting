@@ -1,9 +1,10 @@
 """Bulk entry: curb zones typed (or pasted from a spreadsheet) as CSV rows instead of drawn.
 
-Each row names a street, the cross streets it runs between and a curb side. The row
-becomes a curb line along that side, through as many blocks as it takes, which the app
-then splits into per-block zones like any drawn line. Rows with the same Location share a
-PDF page; rows for the same curb with different dates become extra time windows."""
+Each row names a curb side and either a block ("800-890 Grant Ave", or part of one:
+"800-850 Grant Ave") or a street and the cross streets it runs between. The row becomes a
+curb line along that side, which the app then splits into per-block zones like any drawn
+line. Rows with the same Location share a PDF page; rows for the same curb with different
+dates become extra time windows."""
 
 import csv
 import io
@@ -16,17 +17,22 @@ from datetime import datetime, time
 from core.streets import pretty_street, street_key, to_latlon
 from core.summary import USES, WORKING, Window
 
-COLUMNS = ["Location", "Street", "From", "To", "Side", "Use", "Date", "Start", "End"]
-REQUIRED = ["Street", "From", "To", "Side"]
+COLUMNS = ["Location", "Street", "From", "To", "Side", "Use", "Date", "Start", "End", "Block"]
 EXAMPLE = """Location, Street, From, To, Side, Use, Date, Start, End
 City Hall, McAllister St, Polk St, Van Ness Ave, north, Working vehicles, 11/03/26, 7:00 AM, 11:59 PM
 City Hall, Larkin St, McAllister St, Grove St, both, Picture, 11/03/26, 7:00 AM, 11:59 PM
 Chinatown, Grant Ave, Clay St, Jackson St, west, Working vehicles, 11/04/26, 6:00 AM, 10:00 PM
 Chinatown, Grant Ave, Clay St, Jackson St, west, Working vehicles, 11/05/26, 6:00 AM, 2:00 PM
 """
+EXAMPLE_BLOCKS = """Location, Block, Side, Use, Date, Start, End
+City Hall, 400-490 McAllister St, north, Working vehicles, 11/03/26, 7:00 AM, 11:59 PM
+City Hall, 200-250 Larkin St, west, Picture, 11/03/26, 7:00 AM, 11:59 PM
+Chinatown, 800-890 Grant Ave, west, Working vehicles, 11/04/26, 6:00 AM, 10:00 PM
+"""
 
 CURB_OFFSET_M = 6   # a curb line runs this far off the street's centerline
 END_TRIM_M = 10     # and stops short of each corner, so it doesn't reach the cross street
+BLOCK_TEXT = re.compile(r"(\d+)(?:\s*-\s*(\d+))?\s+(?:block\s+of\s+)?(.+)", re.I)  # "800-890 Grant Ave"
 COMPASS = {"north": (0, 1), "south": (0, -1), "east": (1, 0), "west": (-1, 0)}
 SIDE_WORDS = {"n": "north", "s": "south", "e": "east", "w": "west", "north": "north",
               "south": "south", "east": "east", "west": "west", "both": "both", "b": "both"}
@@ -88,6 +94,18 @@ def parse_use(text):
     raise ValueError(f'use "{text}" (use {" or ".join(USES)})')
 
 
+def address_range(seg):
+    """A block's lowest and highest address, or None if it has none."""
+    numbers = [seg[k] for k in ("lf_fadd", "lf_toadd", "rt_fadd", "rt_toadd") if seg[k]]
+    return (min(numbers), max(numbers)) if numbers else None
+
+
+def same_hundred(a, b):
+    """Whether two pieces of a street are one hundred-block (an alley splits it, not a street)."""
+    a, b = address_range(a), address_range(b)
+    return bool(a and b) and a[0] // 100 == b[0] // 100
+
+
 class StreetRoutes:
     """Finds a street's centerline between two cross streets."""
 
@@ -145,18 +163,76 @@ class StreetRoutes:
         if not path:
             raise ValueError(f"{cross_a} and {cross_b} are the same corner of {street}")
         corners = set(self.index.int_cnns)
+        segments = self.index.segments
         blocks = [[]]
-        for node, i, backwards in path:
+        for step, (node, i, backwards) in enumerate(path):
             coords = self.index.seg_xy[i][::-1] if backwards else self.index.seg_xy[i]
             blocks[-1] += coords if not blocks[-1] else coords[1:]
-            if node in corners:
+            after = path[step + 1][1] if step + 1 < len(path) else None
+            if node in corners and not (after is not None and same_hundred(segments[i], segments[after])):
                 blocks.append([])
+        blocks = [trim(b, END_TRIM_M, END_TRIM_M) for b in blocks
+                  if b and sum(map(math.dist, b, b[1:])) > 3 * END_TRIM_M]
         seg = self.index.segments[path[0][1]]
         # "16th" could be 16th St or 16th Ave; name the one that's actually at the corner.
         corner_names = [sorted({n for c in e for n in self.index.node_names[c]} & c)[0]
                         for e, c in zip(ends, crosses)]
-        return ([b for b in blocks if b], " ".join(filter(None, [seg["street"], seg["st_type"]])),
-                *corner_names)
+        if not blocks:
+            raise ValueError(f"{street} from {cross_a} to {cross_b} is too short for a curb line")
+        return blocks, " ".join(filter(None, [seg["street"], seg["st_type"]])), *corner_names
+
+    def block(self, text):
+        """The curb stretches named by a block or part of one, lowest address first:
+        "800-890 Grant Ave", "800-850 Grant Ave", "800 Grant Ave" or "800 block of Grant Ave".
+        One [(x, y), ...] per hundred-block, stopped short of the corners and cut to the
+        addresses asked for (placed evenly along the block). Raises ValueError with a reason
+        the user can act on."""
+        found = BLOCK_TEXT.fullmatch(text.strip())
+        if not found:
+            raise ValueError(f'block "{text}" (use 800-890 Grant Ave)')
+        low, high, street = int(found[1]), found[2], found[3]
+        names = self.names(street)
+        if not names:
+            raise ValueError(f'no street called "{street}"')
+        low, high = (low // 100 * 100, low // 100 * 100 + 99) if high is None else (low, int(high))
+        if high < low:
+            raise ValueError(f'block "{text}" runs backwards (use 800-890 Grant Ave)')
+        hits = sorted(((address_range(self.index.segments[i]), i) for name in names for i in self.edges[name]
+                       if address_range(self.index.segments[i])), key=lambda hit: hit[0])
+        hits = [(r, i) for r, i in hits if r[0] <= high and r[1] >= low]
+        if not hits:
+            raise ValueError(f"no addresses {low}-{high} on {pretty_street(sorted(names)[0])}")
+        own = {" ".join(filter(None, [self.index.segments[i]["street"], self.index.segments[i]["st_type"]]))
+               for _, i in hits}
+        if len(own) > 1:
+            raise ValueError(f'"{street}" could be ' + " or ".join(pretty_street(n) for n in sorted(own)))
+        # "800-890" is how a whole block is written, though its addresses run on to 898.
+        top = max(r[1] for r, _ in hits)
+        if high >= top // 10 * 10:
+            high = top
+        blocks = []  # [points, trim the start?, trim the end?, last segment index]
+        for (first, last), i in hits:
+            seg = self.index.segments[i]
+            pts = self.index.seg_xy[i]
+            start, stop = seg["lf_fadd"] or seg["rt_fadd"], seg["lf_toadd"] or seg["rt_toadd"]
+            if start > stop:
+                pts = pts[::-1]  # lowest address first
+            length, span = self.index.seg_length[i], (last - first) or 1
+            cut_a = max(0, low - first) / span * length
+            cut_b = max(0, last - high) / span * length
+            if cut_a + cut_b >= length - 1:
+                continue  # only touches the range at its very end
+            pts = trim(pts, cut_a, cut_b)
+            if blocks and same_hundred(self.index.segments[blocks[-1][3]], seg) and math.dist(blocks[-1][0][-1], pts[0]) < 5:
+                blocks[-1][0] += pts[1:]
+                blocks[-1][2], blocks[-1][3] = not cut_b, i
+            else:
+                blocks.append([list(pts), not cut_a, not cut_b, i])
+        lines = [trim(p, END_TRIM_M if a else 0, END_TRIM_M if b else 0) for p, a, b, _ in blocks
+                 if sum(map(math.dist, p, p[1:])) > (END_TRIM_M if a else 0) + (END_TRIM_M if b else 0) + 3]
+        if not lines:
+            raise ValueError(f"{low}-{high} {pretty_street(next(iter(own)))} is too short for a curb line")
+        return lines, next(iter(own))
 
     def _walk(self, names, starts, goals):
         """[(node reached, segment, walked backwards), ...] along streets called `names`
@@ -231,7 +307,8 @@ def read_rows(text):
     reader = csv.reader(io.StringIO("\n".join(lines)), skipinitialspace=True)
     rows = [[c.strip() for c in r] for r in reader]
     wanted = {c.lower(): c for c in COLUMNS}
-    if {c.lower() for c in rows[0]} & set(wanted) >= {"street", "from", "to"}:
+    named = {c.lower() for c in rows[0]} & set(wanted)
+    if named >= {"street", "from", "to"} or "block" in named:
         header, body, first = [wanted.get(c.lower(), c) for c in rows[0]], rows[1:], 2
     else:
         header, body, first = COLUMNS, rows, 1
@@ -244,7 +321,9 @@ def plan(text, routes):
     planned, errors = {}, []
     for n, row in read_rows(text):
         try:
-            missing = [c for c in REQUIRED if not row.get(c, "").strip()]
+            by_block = bool(row.get("Block", "").strip())
+            required = ["Side"] if by_block else ["Street", "From", "To", "Side"]
+            missing = [c for c in required if not row.get(c, "").strip()]
             if missing:
                 raise ValueError(f"missing {', '.join(missing)}")
             side = SIDE_WORDS.get(row["Side"].strip().lower())
@@ -253,7 +332,12 @@ def plan(text, routes):
             use = parse_use(row.get("Use", ""))
             day = parse_date(row.get("Date", ""))
             start, end = parse_time(row.get("Start", "")), parse_time(row.get("End", ""))
-            blocks, own, cross_a, cross_b = routes.route(row["Street"], row["From"], row["To"])
+            if by_block:
+                blocks, own = routes.block(row["Block"])
+                name = row["Block"].strip()
+            else:
+                blocks, own, cross_a, cross_b = routes.route(row["Street"], row["From"], row["To"])
+                name = f"{pretty_street(own)} from {pretty_street(cross_a)} to {pretty_street(cross_b)}"
             allowed = sides_of(blocks)
             if side == "both":
                 sides = list(allowed)
@@ -266,14 +350,11 @@ def plan(text, routes):
             errors.append(f"Row {n}: {e}")
             continue
         location = row.get("Location", "").strip()
-        cross_a, cross_b = pretty_street(cross_a), pretty_street(cross_b)
         for s in sides:
-            key = (location.lower(), own, cross_a, cross_b, s, use)
+            key = (location.lower(), name.lower(), s, use)
             if key not in planned:
-                lines = [[to_latlon(x, y) for x, y in offset(trim(b, END_TRIM_M, END_TRIM_M), s)]
-                         for b in blocks if sum(map(math.dist, b, b[1:])) > 3 * END_TRIM_M]
-                planned[key] = Planned(location, f"{pretty_street(own)} from {cross_a} to {cross_b}, {s} side",
-                                       s, use, lines)
+                lines = [[to_latlon(x, y) for x, y in offset(b, s)] for b in blocks]
+                planned[key] = Planned(location, f"{name}, {s} side", s, use, lines)
             p = planned[key]
             p.rows.append(n)
             if day or start or end:

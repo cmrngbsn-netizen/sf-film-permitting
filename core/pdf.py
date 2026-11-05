@@ -99,12 +99,13 @@ def text_box(overlay, x, y, text, font_px, border):
                         stroke_width=1, stroke_fill=(29, 29, 31, 255))
 
 
-def render_map(lines, markers=(), arrows=(), basemap=OSM):
-    """PNG bytes of curb zones, arrows and markers over a basemap (core.basemaps).
-    lines: [(points [(lat, lon), ...], (r, g, b), label), ...]
+def render_map(lines, labels=(), markers=(), arrows=(), basemap=OSM):
+    """PNG bytes of curb lines, space counts, arrows and markers over a basemap (core.basemaps).
+    lines: [(points [(lat, lon), ...], (r, g, b)), ...], each drawn whole, as it was drawn
+    labels: [((lat, lon), text, (r, g, b)), ...]
     markers: [(kind "Star" or "Text box", (lat, lon), text, size_px, (r, g, b) border), ...]
     arrows: [(points, (r, g, b)), ...] with the head at the last point"""
-    every = ([p for pts, _, _ in lines for p in pts] + [m[1] for m in markers]
+    every = ([p for pts, _ in lines for p in pts] + [m[1] for m in markers]
              + [p for pts, _ in arrows for p in pts])
     lats, lons = [p[0] for p in every], [p[1] for p in every]
     center = [(min(lons) + max(lons)) / 2, (min(lats) + max(lats)) / 2]
@@ -126,13 +127,14 @@ def render_map(lines, markers=(), arrows=(), basemap=OSM):
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font = ImageFont.load_default(size=26)
-    for pts, rgb, label in lines:
+    for pts, rgb in lines:
         px = [to_px(lat, lon) for lat, lon in pts]
         draw.line(px, fill=rgb + (255,), width=9, joint="curve")
         for x, y in (px[0], px[-1]):
             draw.ellipse([x - 9, y - 9, x + 9, y + 9], fill=rgb + (255,))
-        # Space count in a white box at the middle of the zone, like the Film SF slides.
-        x, y = px[len(px) // 2]
+    # Space counts in white boxes along the lines, like the Film SF slides.
+    for (lat, lon), label, rgb in labels:
+        x, y = to_px(lat, lon)
         box = draw.textbbox((x, y), label, font=font, anchor="mm")
         draw.rectangle([box[0] - 8, box[1] - 6, box[2] + 8, box[3] + 6],
                        fill="white", outline=rgb + (255,), width=3)

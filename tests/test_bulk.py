@@ -4,7 +4,7 @@ from datetime import date, time
 
 import pytest
 
-from core.bulk import EXAMPLE, StreetRoutes, parse_date, parse_time, plan
+from core.bulk import EXAMPLE, EXAMPLE_BLOCKS, StreetRoutes, parse_date, parse_time, plan
 from core.curbs import CurbZoner
 from core.streets import StreetIndex
 from core.summary import PICTURE, WORKING
@@ -77,6 +77,51 @@ def test_errors_name_the_row(routes):
     assert errors[1] == 'Row 3: no street called "Nowhere St"'
     assert errors[2].startswith('Row 4: date "13/45/26"')
     assert errors[3] == "Row 5: missing To"
+
+
+def test_alley_does_not_break_the_line(routes, zoner):
+    # 800 Washington has alleys across it, but it's one block: one line, zones only on it.
+    planned, _ = plan("Street,From,To,Side\nWashington,Stockton,Grant,south\n", routes)
+    assert len(planned[0].lines) == 1
+    assert {block for block, _ in zones(zoner, planned[0])} == {"800-890 Washington St"}
+
+
+def test_rows_by_block(routes, zoner):
+    planned, errors = plan(EXAMPLE_BLOCKS, routes)
+    assert errors == []
+    grant = next(p for p in planned if p.location == "Chinatown")
+    assert grant.label == "800-890 Grant Ave, west side"
+    assert zones(zoner, grant) == [("800-890 Grant Ave", "west")]
+
+
+def test_part_of_a_block_is_a_shorter_line(routes, zoner):
+    def feet(block):
+        planned, errors = plan(f"Block,Side\n{block},west\n", routes)
+        assert errors == []
+        return sum(z.length_ft for line in planned[0].lines for z in zoner.zones(line))
+    whole, half = feet("800-890 Grant Ave"), feet("800-850 Grant Ave")
+    assert whole > 200 and 0.4 * whole < half < 0.7 * whole
+    assert feet("800 Grant") == whole and feet("800 block of Grant Ave") == whole
+    # The far half too: addresses count from the low end whichever way the data runs.
+    far = plan("Block,Side\n850-890 Grant Ave,west\n", routes)[0][0].lines[0]
+    near = plan("Block,Side\n800-850 Grant Ave,west\n", routes)[0][0].lines[0]
+    assert far[0][0] > near[0][0]  # Grant addresses climb going north
+
+
+def test_several_blocks_in_one_row(routes, zoner):
+    planned, errors = plan("Block,Side\n800-990 Grant Ave,west\n", routes)
+    assert errors == [] and len(planned[0].lines) == 2
+    assert zones(zoner, planned[0]) == [("800-890 Grant Ave", "west"), ("900-990 Grant Ave", "west")]
+
+
+def test_block_errors_name_the_row(routes):
+    text = "Block,Side\nGrant Ave,west\n30000-30090 Grant Ave,west\n800-890 Nowhere St,west\n890-800 Grant,west\n800-890 Grant,\n"
+    _, errors = plan(text, routes)
+    assert errors[0] == 'Row 2: block "Grant Ave" (use 800-890 Grant Ave)'
+    assert errors[1] == "Row 3: no addresses 30000-30090 on Grant Ave"
+    assert errors[2] == 'Row 4: no street called "Nowhere St"'
+    assert errors[3].startswith('Row 5: block "890-800 Grant" runs backwards')
+    assert errors[4] == "Row 6: missing Side"
 
 
 def test_dates_and_times():

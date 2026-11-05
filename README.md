@@ -7,8 +7,8 @@ request PDF in the format Film SF expects, with one page per location.
    email and permit number) shared by every page.
 2. **Locations & curbs**: draw lines along the curbs you need (or import them from CSV
    under *Add location*). Each line is split into one zone per block and named the way
-   Film SF does ("8 metered spaces on north side 400-490 McAllister St"). Set the
-   location's dates and hours once; a zone can have its own.
+   Film SF does ("400-490 McAllister St, north side"). Set the location's dates and hours
+   once; a zone can have its own.
 3. **Review & PDF**: preview every page, then download the PDF.
 
 Requests are saved to and opened from a `.json` file (Save / Open in the top bar).
@@ -36,6 +36,7 @@ python3 -m venv .venv
 - `core/curbdata.py`: meters, color curbs and the parking census for a zone.
 - `core/summary.py`, `core/pdf.py`: Film SF wording and the PDF.
 - `core/request.py`: the request and its save file. `core/bulk.py`: CSV import.
+- `core/methods.py`: the Sources & methods text shown in the app.
 - `scripts/build_data.py`: rebuilds `data/` and `static/` from city data.
 
 ## Street and curb data

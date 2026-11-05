@@ -50,25 +50,24 @@ def zone_hours(z):
     return [dates_and_hours(w) for w in timed]
 
 
-def street_side(z):
-    """"8 metered spaces on north side 400-490 McAllister St"."""
-    kind = {"Metered": "metered ", "Non-metered": "non-metered "}.get(z.meters, "")
-    noun = "space" if z.spaces == 1 else "spaces"
-    return f"{z.spaces} {kind}{noun} on {z.side} side {z.block}"
-
-
 def unique(items):
     return list(dict.fromkeys(i for i in items if i))
 
 
-def street_sides(zones):
-    """Street side lines. Pieces of one block side (an alley can split a block in two) are
-    added up into one line, as Film SF writes them."""
+def block_sides(zones):
+    """One line per block, with what's asked for on each side:
+    "800-890 Washington St: 6 metered north, 10 metered south". Pieces of a block side (an
+    alley can split a block in two) are added up."""
     totals = {}
     for z in zones:
-        key = (z.block, z.side, z.meters)
-        totals[key] = totals.get(key, 0) + z.spaces
-    return [street_side(ZoneRequest(block, side, n, meters=m)) for (block, side, m), n in totals.items()]
+        sides = totals.setdefault(z.block, {}).setdefault(z.side, {})
+        sides[z.meters] = sides.get(z.meters, 0) + z.spaces
+    def kind(meters, n):
+        return f"{n} " + {"Metered": "metered", "Non-metered": "non-metered"}.get(
+            meters, "space" if n == 1 else "spaces")
+    return [block + ": " + ", ".join(" + ".join(kind(m, n) for m, n in kinds.items()) + f" {side}"
+                                     for side, kinds in sides.items())
+            for block, sides in totals.items()]
 
 
 def schedules(zones):
@@ -101,8 +100,7 @@ def summarize(zones, colors=None):
                      for s, zs in groups.items()]
     return {
         "# of signs": f"{sum(z.spaces for z in zones)} total spaces",
-        "Block #": unique(z.block for z in zones),
-        "Street side": street_sides(zones),
+        "Block & side": block_sides(zones),
         "Dates & hours": dates,
         "By color": by_color,
     }

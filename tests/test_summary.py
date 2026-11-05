@@ -2,15 +2,24 @@
 
 from datetime import date, time
 
-from core.summary import PICTURE, Window, ZoneRequest, dates_and_hours, street_side, summarize
+from core.summary import PICTURE, Window, ZoneRequest, block_sides, dates_and_hours, summarize
 
 
-def test_street_side_matches_film_sf_wording():
-    z = ZoneRequest("400-490 McAllister St", "north", 8, meters="Metered")
-    assert street_side(z) == "8 metered spaces on north side 400-490 McAllister St"
-    z = ZoneRequest("200-290 Harriet St", "west", 2, meters="Non-metered")
-    assert street_side(z) == "2 non-metered spaces on west side 200-290 Harriet St"
-    assert street_side(ZoneRequest("800-890 Grant Ave", "west", 1)) == "1 space on west side 800-890 Grant Ave"
+def test_block_and_side_on_one_line():
+    z = ZoneRequest
+    assert block_sides([z("400-490 McAllister St", "north", 8, meters="Metered")]) == [
+        "400-490 McAllister St: 8 metered north"]
+    assert block_sides([z("200-290 Harriet St", "west", 2, meters="Non-metered")]) == [
+        "200-290 Harriet St: 2 non-metered west"]
+    assert block_sides([z("800-890 Grant Ave", "west", 1)]) == ["800-890 Grant Ave: 1 space west"]
+    # Both sides of a block, and pieces an alley splits, share the line.
+    assert block_sides([z("800-890 Washington St", "north", 4, meters="Metered"),
+                        z("800-890 Washington St", "north", 2, meters="Metered"),
+                        z("800-890 Washington St", "south", 10, meters="Metered"),
+                        z("700-790 Clay St", "north", 6, meters="Metered"),
+                        z("700-790 Clay St", "north", 4, meters="Non-metered")]) == [
+        "800-890 Washington St: 6 metered north, 10 metered south",
+        "700-790 Clay St: 6 metered + 4 non-metered north"]
 
 
 def test_dates_and_hours():
@@ -28,10 +37,8 @@ def test_shared_schedule_listed_once():
     ]
     s = summarize(zones)
     assert s["# of signs"] == "29 total spaces"
-    assert s["Block #"] == ["800-890 Grant Ave", "700-790 Clay St"]
     assert s["Dates & hours"] == ["WE, 11/04/26 7:00 AM - 10:00 PM"]
-    # Two pieces of one block side (split by an alley) are one line, as Film SF writes it.
-    assert s["Street side"] == ["23 spaces on west side 800-890 Grant Ave", "6 spaces on north side 700-790 Clay St"]
+    assert s["Block & side"] == ["800-890 Grant Ave: 23 spaces west", "700-790 Clay St: 6 spaces north"]
     assert s["By color"] == []
 
 

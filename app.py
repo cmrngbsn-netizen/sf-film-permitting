@@ -1,8 +1,8 @@
 """SF Film Permit helper (beta).
 
 Draw lines along the curbs you need for a shoot, at one or more locations. Each line is
-split into one zone per block and named the way Film SF names them ("8 spaces on north
-side 400-490 McAllister St"), then exported as a parking request PDF with one page per
+split into one zone per block and named the way Film SF names them ("400-490 McAllister
+St, north side"), then exported as a parking request PDF with one page per
 location. Requests can be saved to a file and reopened.
 Run locally with: streamlit run app.py
 """
@@ -38,9 +38,10 @@ if getattr(sys, "_sf_core_version", None) != code_version():
 
 from core.basemaps import OSM  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
-from core.bulk import EXAMPLE as CSV_EXAMPLE, StreetRoutes, plan  # noqa: E402
-from core.curbs import CurbZoner, place_name, place_names  # noqa: E402
+from core.bulk import EXAMPLE_BLOCKS, StreetRoutes, plan  # noqa: E402
+from core.curbs import CurbZoner, block_labels, place_name, place_names  # noqa: E402
 from core.map_tools import MapTools  # noqa: E402
+from core.methods import methods  # noqa: E402
 from core.pdf import Box, Page, build_pdf, render_map  # noqa: E402
 from core.request import (DEFAULT_COLOR, LINE_COLORS, REQUEST_FIELDS,  # noqa: E402
                           STAR, TEXT, TEXT_COLOR, TEXT_PX, Arrow, Line, Marker, Request,
@@ -85,8 +86,9 @@ def curb_data():
 
 
 @st.cache_data(show_spinner="Drawing the map for the PDF...")
-def pdf_map(lines, arrows, markers):
-    return render_map([(list(pts), rgb(color), label) for pts, color, label in lines],
+def pdf_map(lines, labels, arrows, markers):
+    return render_map([(list(pts), rgb(color)) for pts, color in lines],
+                      [(point, text, rgb(color)) for point, text, color in labels],
                       [(kind, point, text, size, rgb(color)) for kind, point, text, size, color in markers],
                       [(list(pts), rgb(color)) for pts, color in arrows])
 
@@ -169,9 +171,9 @@ def as_time(v):
     return time.fromisoformat(v) if isinstance(v, str) else v
 
 
-def window_columns(compact=False):
+def window_columns():
     """Date, Start and End columns for a dates-and-hours table."""
-    return {"Date": st.column_config.DateColumn(format="MM/DD/YY" if compact else "ddd MM/DD/YY"),
+    return {"Date": st.column_config.DateColumn(format="ddd MM/DD/YY"),
             "Start": st.column_config.TimeColumn(format="h:mm a", step=900),
             "End": st.column_config.TimeColumn(format="h:mm a", step=900)}
 
@@ -229,14 +231,21 @@ WHERE_BORDER = (120, 120, 128)  # the grey "where" table
 
 
 def location_page(req, loc):
-    """(map lines, arrows, markers, info boxes, legend) for one location's page, or None if
-    it has no zones."""
+    """(map lines, space counts, arrows, markers, info boxes, legend) for one location's page,
+    or None if it has no zones."""
     zones, ids, colors, rows = location_zones(loc)
     if not zones:
         return None
     asks = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"], loc.windows_for(zid))
             for z, zid, r in zip(zones, ids, rows)]
-    drawn = tuple((tuple(z.points), c, str(a.spaces)) for z, c, a in zip(zones, colors, asks))
+    # Each line whole, as it was drawn, with one count per block side it runs along.
+    drawn, labels, spaces = [], [], iter(a.spaces for a in asks)
+    for line in loc.lines:
+        on_line = zoner().zones(line.points)
+        if on_line:
+            drawn.append((tuple(line.points), line.color))
+            labels += [(point, str(total), line.color)
+                       for point, total in block_labels(on_line, [next(spaces) for _ in on_line])]
     markers = tuple((m.kind, tuple(m.point), m.text, m.size, m.color) for m in loc.markers
                     if m.kind == STAR or m.text.strip())
     arrows = tuple((tuple(a.points), a.color) for a in loc.arrows)
@@ -256,11 +265,11 @@ def location_page(req, loc):
              ("Email", req.info["Email"]), ("Film SF permit #", req.info["Film SF permit #"])],
             WHO_BORDER, width=1.2),
         Box([("# of signs", summary["# of signs"]), ("Location", loc.info["Location"]),
-             ("Block #", summary["Block #"]), ("Street side", summary["Street side"])], WHERE_BORDER),
+             ("Block & side", summary["Block & side"])], WHERE_BORDER),
     ]
     boxes += [Box([("Dates & hours", dates)], rgb(c), f"{COLOR_NAMES.get(c, '')} lines: {' / '.join(uses)}")
               for c, uses, dates in summary["By color"] if dates]
-    return drawn, arrows, markers, boxes, legend
+    return tuple(drawn), tuple(labels), arrows, markers, boxes, legend
 
 
 def slug(text):
@@ -398,15 +407,16 @@ def add_planned(planned, text):
 
 @st.dialog("Import curbs from CSV", width="large")
 def csv_import():
-    st.caption("One row per curb: **Street**, the cross streets it runs **From** and **To**, and "
-               "the **Side** (north, south, east, west or both). **Location**, **Use**, **Date**, "
+    st.caption("One row per curb, with its **Side** (north, south, east, west or both) and either "
+               "a **Block**, whole or part (`800-890 Grant Ave`, `800-850 Grant Ave`), or a **Street** "
+               "with the cross streets it runs **From** and **To**. **Location**, **Use**, **Date**, "
                "**Start** and **End** are optional.")
     upload_csv = st.file_uploader("CSV file", type=["csv", "txt"], key="csv-file",
                                   label_visibility="collapsed")
     if upload_csv is not None and st.session_state.get("csv-file-seen") != upload_csv.file_id:
         st.session_state["csv-file-seen"] = upload_csv.file_id
         st.session_state["csv-text"] = upload_csv.getvalue().decode("utf-8-sig", errors="replace")
-    st.session_state.setdefault("csv-text", CSV_EXAMPLE)
+    st.session_state.setdefault("csv-text", EXAMPLE_BLOCKS)
     csv_text = st.text_area("Rows", key="csv-text", height=170)
     planned, problems = plan(csv_text, routes())
     for problem in problems:
@@ -439,6 +449,11 @@ HOW_IT_WORKS = [
 ]
 
 
+@st.dialog("Sources & methods", width="large")
+def methods_dialog():
+    st.markdown(methods(curb_data().built))
+
+
 def start_step():
     intro, sample = st.columns([3, 2], gap="large")
     with intro:
@@ -469,6 +484,8 @@ def start_step():
                              on_change=open_request, args=(f"g{gen}-open-start",))
         if importer.button("Import curbs from CSV", type="tertiary", icon=":material/upload_file:"):
             csv_import()
+    if st.button("Sources & methods", type="tertiary", icon=":material/menu_book:"):
+        methods_dialog()
 
 
 def locations_step():
@@ -553,6 +570,22 @@ def locations_step():
         bound_text("Contact", loc.info, "Contact", f"g{gen}-{loc.id}-Contact")
         bound_text("Phone", loc.info, "Phone", f"g{gen}-{loc.id}-Phone", placeholder="(415) 555-0100",
                    formatter=format_phone)
+        scenes = {"text": "\n".join(loc.scenes)}
+        bound_text("Scenes", scenes, "text", f"g{gen}-{loc.id}-scenes", area=True, height=80,
+                   placeholder="INT City Hall - SHOOT", help="One scene per line.")
+        loc.scenes = [line.strip() for line in scenes["text"].splitlines() if line.strip()]
+        store = {"notes": loc.notes}
+        bound_text("Notes", store, "notes", f"g{gen}-{loc.id}-notes", area=True, height=80,
+                   placeholder="Anything the permit office should know")
+        loc.notes = store["notes"]
+        if loc.lines and not zones:
+            st.warning("That line isn't on a street. Draw it along the curb.")
+        elif zones:
+            spaces = sum(int(r["Spaces"] or 0) for r in base_rows)
+            st.markdown(f"**{spaces} spaces** · {len(zones)} zone{'s' if len(zones) != 1 else ''}")
+
+    dates_col, _ = st.columns([1, 1])
+    with dates_col:
         st.markdown("**Dates & hours**", help="For every zone at this location. Add a row for each "
                     "day. To give one zone different times, tick Own times in the zones table. An "
                     "end time earlier than the start means the next day.")
@@ -560,39 +593,22 @@ def locations_step():
         picked = st.data_editor(
             snapshot(dates_key, lambda: window_rows(loc.dates)),
             key=dates_key, hide_index=True, use_container_width=True, num_rows="dynamic",
-            column_config=window_columns(compact=True))
+            column_config=window_columns())
         loc.dates = [Window(as_date(r.get("Date")), as_time(r.get("Start")), as_time(r.get("End")))
                      for r in picked.to_dict("records")]
-        with st.expander("Scenes and notes", expanded=bool(loc.scenes or loc.notes)):
-            scenes = {"text": "\n".join(loc.scenes)}
-            bound_text("Scene(s)", scenes, "text", f"g{gen}-{loc.id}-scenes", area=True, height=80,
-                       placeholder="INT City Hall - SHOOT", help="One scene per line.")
-            loc.scenes = [line.strip() for line in scenes["text"].splitlines() if line.strip()]
-            store = {"notes": loc.notes}
-            bound_text("Notes", store, "notes", f"g{gen}-{loc.id}-notes", area=True, height=90,
-                       placeholder="Anything the permit office should know")
-            loc.notes = store["notes"]
-        if loc.lines and not zones:
-            st.warning("That line isn't on a street. Draw it along the curb.")
-        elif zones:
-            spaces = sum(int(r["Spaces"] or 0) for r in base_rows)
-            st.markdown(f"**{spaces} spaces** · {len(zones)} zone{'s' if len(zones) != 1 else ''}")
 
     if zones:
         labels = [f"{i} · {z.block} ({z.side})" for i, z in enumerate(zones, start=1)]
         zones_key = f"g{gen}-{loc.id}-{hash(tuple(ids))}"
 
-        heading, toggle, sources = st.columns([6, 1.4, 1], vertical_alignment="center")
+        heading, toggle, sources = st.columns([6, 1.4, 1.4], vertical_alignment="center")
         heading.subheader("Curb zones")
         curb_details = toggle.toggle("Curb details", key="curb_details",
                                      on_change=lambda: st.session_state.update(snapshots={}),
                                      help="Show the meters and color curbs (blue, white, yellow zones, "
                                           "red-curb driveways) on each block.")
-        with sources.popover("Sources", use_container_width=True):
-            st.markdown(f"- **Meters and color curbs:** SFMTA, updated {curb_data().built}\n"
-                        "- **Spaces on unmetered curb:** SFMTA parking census (2008-2014)\n"
-                        "- **Streets and addresses:** DataSF\n\n"
-                        "Metered curb counts one space per car meter. Change any value you know better.")
+        if sources.button("Sources & methods", use_container_width=True):
+            methods_dialog()
 
         def zone_rows():
             return [{"Zone": i, "Block": z.block, "Side": z.side, "Between": z.between,
@@ -654,9 +670,9 @@ def review_step():
         st.info("Draw curb lines at a location to build the PDF.")
         st.button("Back to locations", on_click=go, args=(1,))
         return
-    pdf = build_pdf([Page(pdf_map(drawn_, arrows_, markers_), boxes_, loc_.scenes, loc_.notes,
+    pdf = build_pdf([Page(pdf_map(drawn_, labels_, arrows_, markers_), boxes_, loc_.scenes, loc_.notes,
                           [(label, rgb(c)) for label, c in legend_])
-                     for loc_, (drawn_, arrows_, markers_, boxes_, legend_) in pages], project=project)
+                     for loc_, (drawn_, labels_, arrows_, markers_, boxes_, legend_) in pages], project=project)
     head, button = st.columns([4, 1], vertical_alignment="center")
     head.subheader(f"{len(pages)} page{'s' if len(pages) != 1 else ''}, one per location")
     button.download_button("Download PDF", type="primary", mime="application/pdf", data=pdf,
