@@ -108,6 +108,16 @@ def test_part_of_a_block_is_a_shorter_line(routes, zoner):
     assert far[0][0] > near[0][0]  # Grant addresses climb going north
 
 
+def test_numbered_streets_with_their_type(routes, zoner):
+    # The city data has "06TH ST"; people type "6th St". The type tells it from 6th Ave.
+    planned, errors = plan("Block,Side\n400-490 6th St,west\n", routes)
+    assert errors == [] and {block for block, _ in zones(zoner, planned[0])} == {"400-490 6th St"}
+    planned, errors = plan("Street,From,To,Side\n6th Ave,Clement St,Geary Blvd,west\n", routes)
+    assert errors == [] and planned[0].label.startswith("6th Ave")
+    # Without the type it's a question.
+    assert plan("Block,Side\n400-490 6th,west\n", routes)[1] == ['Row 2: "6th" could be 6th Ave or 6th St']
+
+
 def test_several_blocks_in_one_row(routes, zoner):
     planned, errors = plan("Block,Side\n800-990 Grant Ave,west\n", routes)
     assert errors == [] and len(planned[0].lines) == 2

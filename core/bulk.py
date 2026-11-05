@@ -126,10 +126,9 @@ class StreetRoutes:
         typed = text.strip()
         if not typed:
             return set()
-        full = typed.upper()
-        if full in self.by_key.get(street_key(typed), set()):
-            return {full}  # typed with its type, e.g. "Mission St" vs "Mission Bay Blvd"
-        return self.by_key.get(street_key(typed), set())
+        found = self.by_key.get(street_key(typed), set())
+        # Typed with its type, e.g. "Mission St" vs "Mission Bay Blvd", or "6th St" vs "6th Ave".
+        return {n for n in found if pretty_street(n).upper() == pretty_street(typed.upper()).upper()} or found
 
     def route(self, street, cross_a, cross_b):
         """The street's centerline from where it meets cross_a to where it meets cross_b, as
