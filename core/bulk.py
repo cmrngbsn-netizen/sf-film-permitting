@@ -47,6 +47,7 @@ class Planned:
     side: str
     use: str
     lines: list             # [[(lat, lon), ...], ...], one curb line per block
+    blocks: list = field(default_factory=list)   # per line, the addresses typed for part of a block, or None
     windows: list = field(default_factory=list)  # [Window, ...]
     rows: list = field(default_factory=list)     # CSV row numbers it came from
 
@@ -208,8 +209,9 @@ class StreetRoutes:
         """The curb stretches named by a block or part of one, lowest address first:
         "800-890 Grant Ave", "800-850 Grant Ave", "800 Grant Ave" or "800 block of Grant Ave".
         One [(x, y), ...] per hundred-block, stopped short of the corners and cut to the
-        addresses asked for (placed evenly along the block). Raises ValueError with a reason
-        the user can act on."""
+        addresses asked for (placed evenly along the block). Returns (lines, street, ranges),
+        with the addresses asked for on each line ("2801-2845 Clay St"), or None for a whole block.
+        Raises ValueError with a reason the user can act on."""
         found = BLOCK_TEXT.fullmatch(text.strip())
         if not found:
             raise ValueError(f'block "{text}" (use 800-890 Grant Ave)')
@@ -233,7 +235,7 @@ class StreetRoutes:
         top = max(r[1] for r, _ in hits)
         if high >= top // 10 * 10:
             high = top
-        blocks = []  # [points, trim the start?, trim the end?, last segment index]
+        blocks = []  # [points, trim at the start, trim at the end, last segment index, addresses]
         for (first, last), i in hits:
             seg = self.index.segments[i]
             pts = self.index.seg_xy[i]
@@ -246,16 +248,23 @@ class StreetRoutes:
             if cut_a + cut_b >= length - 1:
                 continue  # only touches the range at its very end
             pts = trim(pts, cut_a, cut_b)
+            # Cutting a little off an end doesn't clear the corner, so it still gets the rest.
+            trim_a, trim_b = max(0, END_TRIM_M - cut_a), max(0, END_TRIM_M - cut_b)
+            hundred = first // 100 * 100
+            shown = max(low, hundred), high if cut_b else last // 10 * 10
             if blocks and same_hundred(self.index.segments[blocks[-1][3]], seg) and math.dist(blocks[-1][0][-1], pts[0]) < 5:
                 blocks[-1][0] += pts[1:]
-                blocks[-1][2], blocks[-1][3] = not cut_b, i
+                blocks[-1][2], blocks[-1][3] = trim_b, i
+                blocks[-1][4] = (blocks[-1][4][0], shown[1])
+                blocks[-1][5] = blocks[-1][5] or bool(cut_b)
             else:
-                blocks.append([list(pts), not cut_a, not cut_b, i])
-        lines = [trim(p, END_TRIM_M if a else 0, END_TRIM_M if b else 0) for p, a, b, _ in blocks
-                 if sum(map(math.dist, p, p[1:])) > (END_TRIM_M if a else 0) + (END_TRIM_M if b else 0) + 3]
+                blocks.append([list(pts), trim_a, trim_b, i, shown, bool(cut_a or cut_b)])
+        long_enough = [b for b in blocks if sum(map(math.dist, b[0], b[0][1:])) > b[1] + b[2] + 3]
+        lines = [trim(p, a, b) for p, a, b, *_ in long_enough]
         if not lines:
             raise ValueError(f"{low}-{high} {pretty_street(next(iter(own)))} is too short for a curb line")
-        return lines, next(iter(own))
+        street = pretty_street(next(iter(own)))
+        return lines, next(iter(own)), [f"{a}-{b} {street}" if part else None for *_, (a, b), part in long_enough]
 
     def _walk(self, names, starts, goals):
         """[(node reached, segment, walked backwards), ...] along streets called `names`
@@ -356,10 +365,11 @@ def plan(text, routes):
             days = parse_dates(row.get("Date", ""))
             start, end = parse_time(row.get("Start", "")), parse_time(row.get("End", ""))
             if by_block:
-                blocks, own = routes.block(row["Block"])
+                blocks, own, ranges = routes.block(row["Block"])
                 name = row["Block"].strip()
             else:
                 blocks, own, cross_a, cross_b = routes.route(row["Street"], row["From"], row["To"])
+                ranges = [None] * len(blocks)
                 name = f"{pretty_street(own)} from {pretty_street(cross_a)} to {pretty_street(cross_b)}"
             allowed = sides_of(blocks)
             if side == "both":
@@ -377,7 +387,7 @@ def plan(text, routes):
             key = (location.lower(), name.lower(), s, use)
             if key not in planned:
                 lines = [[to_latlon(x, y) for x, y in offset(b, s)] for b in blocks]
-                planned[key] = Planned(location, f"{name}, {s} side", s, use, lines)
+                planned[key] = Planned(location, f"{name}, {s} side", s, use, lines, ranges)
             p = planned[key]
             p.rows.append(n)
             if days:

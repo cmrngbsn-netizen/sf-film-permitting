@@ -37,7 +37,9 @@ City data last pulled **{built}**.
    metered and the other isn't.
 3. The side (north, south, east or west) comes from which side of the street's centerline the
    line is on, and the direction the street mostly runs.
-4. A block is named by its hundred range, like 800-890 Grant Ave.
+4. A block is named by its hundred range, like 800-890 Grant Ave. A line covering only part of
+   a block is named by the addresses it covers, estimated by spacing them evenly along the block
+   and rounded to the nearest 5, like 800-845 Grant Ave. Exact addresses can be typed over it.
 
 #### How spaces are counted
 

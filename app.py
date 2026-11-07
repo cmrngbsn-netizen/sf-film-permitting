@@ -322,9 +322,9 @@ def merge_in(loc, days):
 
 
 def zone_defaults(z, color):
-    """Curb, meters and spaces filled in from SFMTA data; a blue line starts as Picture."""
+    """Block, curb, meters and spaces filled in from the city's data; a blue line starts as Picture."""
     info = curb_data().lookup(z)
-    return {"Curb": info.describe(), "Meters": "Metered" if info.metered else "Non-metered",
+    return {"Block": z.stretch, "Curb": info.describe(), "Meters": "Metered" if info.metered else "Non-metered",
             "Spaces": info.suggested_spaces(z.length_ft),
             "Use": PICTURE if color == LINE_COLORS["Blue"] else WORKING}
 
@@ -365,7 +365,7 @@ def location_page(req, loc):
     zones, ids, colors, rows = location_zones(loc)
     if not zones:
         return None
-    asks = [ZoneRequest(z.block, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"], loc.windows_for(zid))
+    asks = [ZoneRequest(r["Block"] or z.stretch, z.side, int(r["Spaces"] or 1), r["Use"], r["Meters"], loc.windows_for(zid))
             for z, zid, r in zip(zones, ids, rows)]
     # Each line whole, as it was drawn, with one count per block side it runs along.
     drawn, labels, spaces = [], [], iter(a.spaces for a in asks)
@@ -500,6 +500,11 @@ def remove_location():
     st.session_state.current = req.locations[0].id
 
 
+def typed_block(block, zones):
+    """The addresses typed in a CSV row, when the line it made stayed on that one block."""
+    return block if block and len({z.block for z in zones}) == 1 else None
+
+
 def add_planned(planned, text):
     """Adds CSV-planned curb lines to the request: rows with the same Location go to one
     location (an existing one with that name, the open one if it's still empty, or a new
@@ -519,11 +524,14 @@ def add_planned(planned, text):
         targets[name.lower()] = loc_
         first = first or loc_
         color = LINE_COLORS["Blue"] if p.use == PICTURE else DEFAULT_COLOR
-        for pts in p.lines:
+        for pts, block in zip(p.lines, p.blocks):
             loc_.lines.append(Line(pts, color))
-            for z in line_zones(pts):
+            zones_on_line = line_zones(pts)
+            for z in zones_on_line:
                 zid = zone_id(z)
                 loc_.zones.setdefault(zid, {})["Use"] = p.use
+                if typed_block(block, zones_on_line):
+                    loc_.zones[zid]["Block"] = block
                 if p.windows:
                     timed.setdefault(loc_.id, {}).setdefault(zid, []).extend(p.windows)
     # The times most imported zones share become the location's dates (if it has none yet);
@@ -562,7 +570,9 @@ def csv_import():
         st.warning(problem + ". This row will be skipped.")
     if planned:
         st.dataframe([{"Location": p.location or "(open location)", "Curb": p.label, "Use": p.use,
-                       "Blocks": ", ".join(dict.fromkeys(z.block for line in p.lines for z in line_zones(line))),
+                       "Blocks": ", ".join(dict.fromkeys(typed_block(block, line_zones(line)) or z.stretch
+                                                         for line, block in zip(p.lines, p.blocks)
+                                                         for z in line_zones(line))),
                        "Dates & hours": "; ".join(f"{group_dates(g)}, {group_hours(g)}" for g in group_days(p.windows)) or "-"}
                       for p in planned], hide_index=True, use_container_width=True)
         again = st.session_state.get("csv_done") == csv_text
@@ -805,7 +815,7 @@ def locations_step():
             methods_dialog()
 
         def zone_rows():
-            return [{"Zone": i, "Block": z.block, "Side": z.side, "Between": z.between,
+            return [{"Zone": i, "Side": z.side, "Between": z.between,
                      "Length (ft)": round(z.length_ft), **row, "Own times": zid in loc.windows}
                     for i, (z, zid, row) in enumerate(zip(zones, ids, base_rows), start=1)]
 
@@ -815,8 +825,11 @@ def locations_step():
             # What gets edited first; the city's curb details only when asked for.
             column_order=["Zone", "Block", "Side", "Spaces", "Use", "Own times", "Meters",
                           *(["Curb"] if curb_details else []), "Between", "Length (ft)"],
-            disabled=["Zone", "Block", "Side", "Between", "Length (ft)"],
+            disabled=["Zone", "Side", "Between", "Length (ft)"],
             column_config={
+                "Block": st.column_config.TextColumn(
+                    help="For part of a block, estimated from where the line sits. Type the exact "
+                         "addresses if you have them."),
                 "Curb": st.column_config.TextColumn(width="large"),
                 "Spaces": st.column_config.NumberColumn(min_value=1, step=1),
                 "Use": st.column_config.SelectboxColumn(options=USES, required=True),
@@ -827,8 +840,11 @@ def locations_step():
         )
         # Zones that no longer exist (a line was moved or erased) drop their own times.
         loc.windows = {zid: ws for zid, ws in loc.windows.items() if zid in ids}
-        for zid, row in zip(ids, edited):
+        for z, zid, row in zip(zones, ids, edited):
             loc.zones[zid] = {k: row[k] for k in ("Curb", "Meters", "Spaces", "Use")}
+            # Only typed addresses are kept, so an estimate follows the line if it's redrawn.
+            if row["Block"] and row["Block"] != z.stretch:
+                loc.zones[zid]["Block"] = row["Block"]
             if row["Own times"] and zid not in loc.windows:
                 loc.windows[zid] = list(loc.dates)  # start from the location's times
             elif not row["Own times"]:

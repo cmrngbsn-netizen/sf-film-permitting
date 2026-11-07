@@ -5,7 +5,7 @@ import json
 from collections import Counter
 from dataclasses import dataclass, field
 
-from core.curbs import SPACE_FT, joined
+from core.curbs import SPACE_FT, joined, share_addresses
 from core.streets import DATA_DIR
 
 # Curb items this far past either end of a drawn zone still count, so a meter or
@@ -112,7 +112,7 @@ class CurbData:
                 groups[-1].append(z)
             else:
                 groups.append([z])
-        return [joined(g) for g in groups]
+        return share_addresses([joined(g) for g in groups])
 
     def lookup(self, zone):
         info = CurbInfo()

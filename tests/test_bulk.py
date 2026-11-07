@@ -108,6 +108,28 @@ def test_part_of_a_block_is_a_shorter_line(routes, zoner):
     assert far[0][0] > near[0][0]  # Grant addresses climb going north
 
 
+def test_part_of_a_block_stays_off_the_corner(routes):
+    # Film SF writes ranges like 2801-2845: one address in, the line still stops short of Scott St.
+    whole = plan("Block,Side\n2800-2890 Clay St,south\n", routes)[0][0].lines[0]
+    part = plan("Block,Side\n2801-2845 Clay St,south\n", routes)[0][0].lines[0]
+    assert abs(part[0][1] - whole[0][1]) < 0.00002  # about 6 ft
+
+
+def test_typed_addresses_are_kept(routes):
+    def blocks(text):
+        planned, errors = plan(f"Block,Side\n{text},west\n", routes)
+        assert errors == []
+        return planned[0].blocks
+    assert blocks("800-890 Grant Ave") == [None] and blocks("800 Grant") == [None]
+    assert blocks("801-845 Grant Ave") == ["801-845 Grant Ave"]
+    assert blocks("800-850 Grant Ave") == ["800-850 Grant Ave"]
+    assert blocks("850-890 Grant Ave") == ["850-890 Grant Ave"]
+    assert blocks("850-950 Grant Ave") == ["850-890 Grant Ave", "900-950 Grant Ave"]
+    assert blocks("800-990 Grant Ave") == [None, None]
+    # Cross streets name whole blocks.
+    assert plan("Street,From,To,Side\nGrant,Clay,Jackson,west\n", routes)[0][0].blocks == [None, None]
+
+
 def test_numbered_streets_with_their_type(routes, zoner):
     # The city data has "06TH ST"; people type "6th St". The type tells it from 6th Ave.
     planned, errors = plan("Block,Side\n400-490 6th St,west\n", routes)

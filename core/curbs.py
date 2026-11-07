@@ -12,6 +12,8 @@ SPACE_FT = 20       # one parking space; 160 ft on a Film SF sign is 8 spaces
 SAMPLE_M = 2        # the drawn line is checked every this many meters
 MAX_OFFSET_M = 25   # a drawn point farther than this from any street is ignored
 MIN_ZONE_M = 6      # shorter runs are noise, e.g. a line crossing an intersection or alley
+CORNER_M = 15       # a line stopping this close to the end of a block counts as reaching it
+ROUND_ADDRESS = 5   # estimated addresses are rounded to this; closer is false precision
 
 
 @dataclass
@@ -29,6 +31,13 @@ class CurbZone:
     block_ft: float = field(default=0, repr=False)      # whole block, intersection to intersection
     corners: tuple = field(default=("", ""), repr=False)  # cross streets at the block's two ends
     parts: list = field(default_factory=list, repr=False)  # the pieces, when several were joined
+    addresses: tuple = field(default=None, repr=False)  # (low, high) the zone covers, estimated
+
+    @property
+    def stretch(self):
+        """The addresses this zone covers: "2800-2845 Clay St", or the block's name when it
+        covers all of it or the block has no addresses."""
+        return f"{self.addresses[0]}-{self.addresses[1]} {self.street}" if self.addresses else self.block
 
 
 class CurbZoner:
@@ -59,6 +68,28 @@ class CurbZoner:
         start = min(a for a, _ in ranges) // 100 * 100
         end = self.block_end[(own, start // 100)] // 10 * 10
         return f"{start}-{end} {pretty_street(own)}"
+
+    def _addresses(self, i, alongs):
+        """The (low, high) addresses a stretch of block `i` covers, spacing addresses evenly along
+        it the way CSV blocks are placed, or None if the block has no addresses."""
+        seg = self.index.segments[i]
+        ranges = self._ranges(seg)
+        if not ranges:
+            return None
+        lowest, highest = min(a for a, _ in ranges), max(b for _, b in ranges)
+        start = lowest // 100 * 100
+        top = self.block_end[(self._own(seg), start // 100)] // 10 * 10
+        length = self.index.seg_length[i]
+        ends = [min(alongs), length - max(alongs)]  # how far short of each end of the block it stops
+        if (seg["lf_fadd"] or seg["rt_fadd"]) > (seg["lf_toadd"] or seg["rt_toadd"]):
+            ends.reverse()  # addresses climb against the direction of the data
+        per_m = (highest - lowest) / length
+        low, high = lowest + ends[0] * per_m, highest - ends[1] * per_m
+        # Close to a real corner counts as reaching it, but an alley is no corner.
+        at_start, at_top = lowest - start < 2 * ROUND_ADDRESS, highest >= top
+        low = start if at_start and ends[0] <= CORNER_M else round(low / ROUND_ADDRESS) * ROUND_ADDRESS
+        high = top if at_top and ends[1] <= CORNER_M else min(top, round(high / ROUND_ADDRESS) * ROUND_ADDRESS)
+        return min(low, top - ROUND_ADDRESS), max(high, low + ROUND_ADDRESS)
 
     def zones(self, line):
         """Curb zones for a drawn line [(lat, lon), ...], in drawing order."""
@@ -121,6 +152,7 @@ class CurbZoner:
             along_m=(min(alongs), max(alongs)),
             block_ft=self.index.seg_length[run[0][0]] / M_PER_FT,
             corners=tuple(ends),
+            addresses=self._addresses(run[0][0], alongs),
         )
 
     @staticmethod
@@ -144,7 +176,20 @@ def joined(parts):
     end = next((c for c in last.corners if c not in parts[-2].corners), last.corners[1])
     longest = max(parts, key=lambda p: p.length_ft)
     return replace(first, between=f"{start} and {end}", length_ft=sum(p.length_ft for p in parts),
-                   points=[pt for p in parts for pt in p.points], near_cross=longest.near_cross, parts=parts)
+                   points=[pt for p in parts for pt in p.points], near_cross=longest.near_cross, parts=parts,
+                   addresses=None if not all(p.addresses for p in parts) else
+                   (min(p.addresses[0] for p in parts), max(p.addresses[1] for p in parts)))
+
+
+def share_addresses(zones):
+    """Zones of one line on the same block side name the same addresses, all that the line covers
+    there. They only stay apart for being metered or not, which a request writes on one line."""
+    covered = {}
+    for z in zones:
+        if z.addresses:
+            low, high = covered.get((z.block, z.side), z.addresses)
+            covered[(z.block, z.side)] = min(low, z.addresses[0]), max(high, z.addresses[1])
+    return [replace(z, addresses=covered[(z.block, z.side)]) if z.addresses else z for z in zones]
 
 
 def block_labels(zones, spaces):

@@ -104,3 +104,32 @@ def test_crossing_an_alley_is_not_a_zone(zoner):
     # One count for the block side on the map, however many pieces the alleys make.
     labels = block_labels(zones, [2] * len(zones))
     assert [total for _, total in labels] == [2 * len(zones)]
+
+
+def test_zone_names_the_addresses_it_covers(zoner):
+    from core.bulk import StreetRoutes, plan
+    routes = StreetRoutes(zoner.index)
+
+    def stretch(block):
+        planned, errors = plan(f"Block,Side\n{block},south\n", routes)
+        assert errors == []
+        return [z.stretch for z in zoner.zones(planned[0].lines[0])]
+    assert stretch("2800-2890 Clay St") == ["2800-2890 Clay St"]
+    assert stretch("2800-2845 Clay St") == ["2800-2845 Clay St"]
+    assert stretch("2850-2890 Clay St") == ["2850-2890 Clay St"]
+    assert stretch("2820-2860 Clay St") == ["2820-2860 Clay St"]
+
+
+def test_alleys_and_meters_dont_split_the_addresses(zoner):
+    from core.bulk import StreetRoutes, plan
+    from core.curbdata import CurbData
+    routes, data = StreetRoutes(zoner.index), CurbData()
+
+    def stretches(block, side):
+        planned, errors = plan(f"Block,Side\n{block},{side}\n", routes)
+        assert errors == []
+        return {z.stretch for z in data.join_pieces(zoner.zones(planned[0].lines[0]))}
+    assert stretches("800-890 Washington St", "south") == {"800-890 Washington St"}
+    assert stretches("800-850 Washington St", "south") == {"800-850 Washington St"}
+    # Part metered, part not: two zones, one stretch of addresses.
+    assert stretches("700-790 Clay St", "north") == {"700-790 Clay St"}
