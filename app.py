@@ -9,6 +9,7 @@ Run locally with: streamlit run app.py
 
 import io
 import re
+import smtplib
 import sys
 from datetime import date, datetime, time
 from pathlib import Path
@@ -40,6 +41,7 @@ from core.basemaps import OSM  # noqa: E402
 from core.curbdata import CurbData  # noqa: E402
 from core.bulk import EXAMPLE_BLOCKS, StreetRoutes, parse_time, plan  # noqa: E402
 from core.curbs import CurbZoner, block_labels, place_name, place_names  # noqa: E402
+from core import feedback  # noqa: E402
 from core.days import (WEEKDAYS, date_range, days_between, group_dates, group_days,  # noqa: E402
                        group_hours, merge_days, short_day)
 from core.map_tools import MapTools  # noqa: E402
@@ -465,7 +467,7 @@ st.markdown("""<style>
 [data-testid="stHeaderActionElements"] {display: none}  /* headings' link icons */
 [data-testid="InputInstructions"] {display: none}  /* "Press Enter to apply": fields save on leaving them */
 </style>""", unsafe_allow_html=True)
-brand, steps_col, file_col = st.columns([3, 5, 2], vertical_alignment="center")
+brand, steps_col, file_col = st.columns([3, 4.5, 2.5], vertical_alignment="center")
 with brand:
     st.markdown("**SF Film Parking Request**" + (f"  \n:gray[{project}]" if project else ""))
 with steps_col:
@@ -474,6 +476,8 @@ with steps_col:
                          label_visibility="collapsed")
 if st.session_state.get("open_error"):
     st.error(st.session_state.pop("open_error"))
+if st.session_state.pop("feedback_sent", False):
+    st.toast("Thanks, your feedback was sent.")
 st.divider()
 notice = st.container()  # the offer to restore unsaved work, filled in at the end
 
@@ -587,6 +591,47 @@ HOW_IT_WORKS = [
 @st.dialog("Sources & methods", width="large")
 def methods_dialog():
     st.markdown(methods(curb_data().built))
+
+
+def feedback_settings():
+    """The feedback inbox from Streamlit's secrets, or None if it isn't set up here."""
+    try:
+        settings = st.secrets.get("feedback")
+    except FileNotFoundError:
+        return None
+    return settings if settings and settings.get("address") and settings.get("app_password") else None
+
+
+@st.dialog("Send feedback")
+def feedback_dialog(settings, work):
+    with st.form("feedback", border=False):
+        kind = st.segmented_control("What is it?", feedback.KINDS, default=feedback.KINDS[0])
+        text = st.text_area("What happened, or what would help?", height=140, max_chars=feedback.MAX_TEXT)
+        reply_to = st.text_input("Your email (optional)", help="Only if you'd like a reply.")
+        attach = False
+        if req.has_content():
+            attach = st.checkbox("Include my request, to show the problem",
+                                 help="Sends everything entered so far, including contact names and phone numbers.")
+        st.caption("Also sent: the step you're on, how many locations you have, and your browser type.")
+        sent = st.form_submit_button("Send", type="primary")
+    if not sent:
+        return
+    wrong = feedback.problem(text, reply_to) or feedback.too_soon(st.session_state.setdefault("feedback_times", []), now())
+    if wrong:
+        st.caption(f":red[{wrong}]")
+        return
+    details = [("Step", STEPS[st.session_state.step]), ("Locations", len(req.locations)),
+               ("Browser", st.context.headers.get("User-Agent", "unknown"))]
+    message = feedback.build(settings["address"], kind or feedback.KINDS[-1], text, reply_to, details,
+                             work if attach else None)
+    try:
+        feedback.send(settings, message)
+    except (smtplib.SMTPException, OSError):
+        st.error("Couldn't send that just now. Your message is still here, so try again in a minute.")
+        return
+    st.session_state.feedback_times.append(now())
+    st.session_state.feedback_sent = True
+    st.rerun()
 
 
 def start_step():
@@ -859,6 +904,9 @@ with file_col:
                            file_name=f"{slug(project) or 'sf-parking-request'}.json",
                            help="Download everything entered so far, to keep a copy or move to "
                                 "another computer.")
+        inbox = feedback_settings()
+        if inbox and st.button("Feedback", help="Report a bug or ask for a feature."):
+            feedback_dialog(inbox, work)
     if req.has_content():
         saved_at, saved_work = st.session_state.get("file_saved", (None, None))
         here = "Can't autosave in this browser" if stored.get("blocked") else "Autosaved in this browser"

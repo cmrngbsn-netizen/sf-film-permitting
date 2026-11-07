@@ -5,3 +5,4 @@ scripts/.cache/
 .claude/
 Project Requirements/
 .pytest_cache/
+.streamlit/secrets.toml

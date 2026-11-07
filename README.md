@@ -40,6 +40,8 @@ python3 -m venv .venv
 - `core/days.py`: shoot days as short groups, and adding many at once.
 - `components/autosave/`: keeps the request in the browser's storage.
 - `core/methods.py`: the Sources & methods text shown in the app.
+- `core/feedback.py`: the Feedback button's email. Its address and password live in Streamlit's
+  secrets (format at the top of the file), and the button stays hidden without them.
 - `scripts/build_data.py`: rebuilds `data/` and `static/` from city data.
 
 ## Street and curb data
